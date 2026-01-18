@@ -493,6 +493,7 @@ def manage():
 @cli_app.command()
 def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = False, save: bool = False, debug: bool = False):
     """CLI 核心分析流程 (Refactored Intent Dispatcher)"""
+    # 处理初始输入（来自命令行参数）
     if use_mic:
         mic_path = Path("data/tmp") / f"mic_{int(time.time())}.wav"
         from src.services.audio_capture import record_audio_until_enter
@@ -506,27 +507,38 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
 
     if not content: content = typer.prompt("请输入内容")
 
-    # 1. 意图识别 (The Brain)
-    with console.status("[bold yellow]正在分析您的意图...", spinner="dots"):
-        intent = controller.identify_intent(content)
-    
-    console.print(f"[dim]识别意图: {intent}[/dim]")
+    # 主交互循环：持续等待用户输入，直到选择退出
+    while True:
+        # 检查退出命令
+        if content.strip().lower() in ["quit", "exit", "q", "退出"]:
+            console.print("[dim]已退出分析模式。[/dim]")
+            break
+        
+        # 1. 意图识别 (The Brain)
+        with console.status("[bold yellow]正在分析您的意图...", spinner="dots"):
+            intent = controller.identify_intent(content)
+        
+        console.print(f"[dim]识别意图: {intent}[/dim]")
 
-    # 2. 意图分发 (The Dispatcher)
-    if intent == "CREATE":
-        handle_create_logic(content)
-    elif intent == "LIST":
-        handle_list_logic(content)
-    elif intent == "GET":
-        handle_get_logic(content)
-    elif intent == "UPDATE":
-        handle_update_logic(content)
-    elif intent == "DELETE":
-        handle_delete_logic(content)
-    elif intent == "OTHER":
-        console.print(f"[yellow]{get_random_ui('intent_other_hint')}[/yellow]")
-        # 也可以 fallback 到 RAG
-        # controller.handle_query(content) 
-    else:
-        # Fallback
-        handle_create_logic(content)
+        # 2. 意图分发 (The Dispatcher)
+        if intent == "CREATE":
+            handle_create_logic(content)
+        elif intent == "LIST":
+            handle_list_logic(content)
+        elif intent == "GET":
+            handle_get_logic(content)
+        elif intent == "UPDATE":
+            handle_update_logic(content)
+        elif intent == "DELETE":
+            handle_delete_logic(content)
+        elif intent == "OTHER":
+            console.print(f"[yellow]{get_random_ui('intent_other_hint')}[/yellow]")
+            # 也可以 fallback 到 RAG
+            # controller.handle_query(content) 
+        else:
+            # Fallback
+            handle_create_logic(content)
+        
+        # 获取下一次输入
+        console.print("")
+        content = typer.prompt("请输入内容")
