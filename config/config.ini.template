@@ -1,16 +1,16 @@
 [volcengine]
-# 火山引擎 Access Key ID
+# 火山引擎通用配置
 access_key = YOUR_VOLC_ACCESS_KEY
-# 火山引擎 Secret Access Key
 secret_key = YOUR_VOLC_SECRET_KEY
-# 服务区域，如 cn-north-1
 region = cn-north-1
 
 [doubao]
-# 豆包大模型接入点 ID (Endpoint ID)，格式如：ep-2024xxxxxxxx
-model_endpoint_id = YOUR_DOUBAO_ENDPOINT_ID
-# 豆包大模型 API Key
+# 豆包大模型通用 API Key
 api_key = YOUR_DOUBAO_API_KEY
+
+# 各功能对应的接入点 (Endpoint ID)
+# 销售提炼分析
+analyze_endpoint = ep-2024xxxxxxxx
 
 [storage]
 # 销售数据存储路径

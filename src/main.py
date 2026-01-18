@@ -2,11 +2,15 @@ import typer
 import configparser
 import json
 import os
+import sys
 import datetime
 from pathlib import Path
 from rich import print
 from rich.console import Console
 from rich.panel import Panel
+
+# 将项目根目录添加到 sys.path，解决 No module named 'src' 问题
+sys.path.append(str(Path(__file__).parent.parent))
 
 # 导入业务服务
 try:
@@ -87,21 +91,26 @@ def record(note_type: str = typer.Option(..., prompt="请输入记录类型(meet
     print("[dim]（此处假装调用了高级AI进行处理...）[/dim]")
 
 @app.command()
-def analyze(content: str = typer.Option(..., prompt="请粘贴要提炼的对话/会议内容"),
+def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼的对话/会议内容"),
             save: bool = typer.Option(False, "--save", "-s", help="是否直接保存结果")):
     """
     [核心] 调用豆包大模型提炼销售小记，并选择是否保存。
     """
-    console.print(Panel("[bold yellow]正在呼叫豆包大模型进行大脑风暴...[/bold yellow]", title="AI 思考中"))
+    # 如果没传 content，就现场问用户要
+    if not content:
+        console.print("[bold yellow]来，把你的会议记录或销售对话粘贴在这儿（按回车确认）：[/bold yellow]")
+        content = typer.prompt("内容")
+
+    console.print(Panel("[bold yellow]正在呼叫 AI 助手进行大脑风暴...[/bold yellow]", title="AI 思考中"))
     
     try:
         # 获取配置
         api_key = config.get("doubao", "api_key", fallback=None)
-        endpoint_id = config.get("doubao", "model_endpoint_id", fallback=None)
+        endpoint_id = config.get("doubao", "analyze_endpoint", fallback=None)
         
         if not api_key or not endpoint_id or "YOUR_" in api_key:
             console.print("[bold red]哎呀！配置没填对！[/bold red]")
-            console.print("快去 config/config.ini 把 [doubao] 下面的 api_key 和 model_endpoint_id 填上！")
+            console.print("快去 config/config.ini 把 [doubao] 下面的 api_key 和 analyze_endpoint 填上！")
             return
 
         # 调用服务
@@ -122,7 +131,7 @@ def analyze(content: str = typer.Option(..., prompt="请粘贴要提炼的对话
                 console.print("[dim]行，那这次就不存了，下次再来。[/dim]")
 
         else:
-            console.print("[red]豆包没反应，可能是累了（报错了）。[/red]")
+            console.print("[red]AI 助手暂时没有响应，请稍后再试。[/red]")
             
     except Exception as e:
         console.print(f"[bold red]出错了：[/bold red] {e}")
