@@ -1,89 +1,73 @@
-# LinkSell - 销售神器 CLI 版
+# LinkSell - 智能销售助手
 
-LinkSell 是一个专为销售团队打造的命令行工具（CLI）。它集成了**火山引擎语音识别**和**豆包大模型**，旨在将碎片化的销售对话和正式的会议纪要，高效地转换为结构化销售数据，并自动存入本地数据库。
+LinkSell 是一个全能的销售数据采集与分析系统。它集成了**火山引擎语音识别 (Seed ASR)** 和 **豆包大模型 (Doubao LLM)**，旨在将碎片化的销售对话、会议录音高效转换为结构化的商业洞察。
 
 ## ✨ 核心功能
 
-*   **🧠 智能提炼 (已就绪)**：接入豆包大模型，自动识别内容类型，深度提取客户画像、项目商机、技术栈及待办事项。
-*   **📂 本地安全存储 (已就绪)**：数据以 JSON 格式保存在本地，确保数据隐私与安全。
-*   **⚙️ 灵活配置 (已就绪)**：通过标准化的 `config.ini` 文件管理 API 密钥与系统提示词（Prompts）。
-*   **🎙️ 语音转写 (已实装)**：集成火山引擎 Seed ASR 大模型，支持录音文件及麦克风直接识别。
-*   **✨ 文本润色 (已实装)**：在分析前自动去除口语冗余，将口述内容转化为规范的书面文本。
-*   **🤖 秘书式交互 (已实装)**：内置可自定义的语料库，提供温婉、专业的“秘书”级操作反馈。
+*   **🖼️ 现代化图形界面 (GUI)**：默认提供基于 Streamlit 的聊天式网页界面，操作直观，支持音频上传与实时交互。
+*   **💻 极客命令行模式 (CLI)**：通过 `--cli` 参数，可在终端执行高效的分析与批处理。
+*   **🎙️ 智能语音转写**：采用大模型 ASR 技术，精准识别口语，支持麦克风录制或文件上传。
+*   **✨ 文本润色与格式化**：在分析前自动去除赘余口语，将内容转化为标准、专业的商务书面文本。
+*   **🤖 秘书级交互体验**：内置丰富的随机语料库，系统反馈更具“人情味”，告别冰冷的机器指令。
+*   **📝 对话式修订**：支持使用自然语言直接修改分析结果，无需手动调整 JSON 数据。
 
 ## 🚀 快速开始
 
 ### 1. 环境准备
-# ... (same)
+请确保您的环境已安装 Python 3.8 或更高版本。
+
+```bash
+# 克隆项目
+cd LinkSell
+
+# 创建并激活虚拟环境
+python3 -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# 安装依赖
+pip install -r requirements.txt
+```
 
 ### 2. 配置密钥
-# ... (same)
-
-### 2.3 语音识别配置 (ASR)
-本项目采用 **Seed ASR 大模型语音识别服务**。
-
-在 `config/config.ini` 中填入 AppID 及 Access Token：
-```ini
-[asr]
-app_id = 12345678
-access_token = YOUR_ACCESS_TOKEN_HERE
-resource_id = volc.seedasr.auc
-```
-*注意：`resource_id` 建议设置为 `volc.seedasr.auc` 以获得最佳的大模型识别效果。*
-
-## 📁 核心配置文件
-*   `config/config.ini`: 存放所有 API 密钥。
-*   `config/prompts/*.txt`: 存放 AI 系统提示词（Prompt）。
-*   `config/ui_templates.json`: 存放 CLI 界面交互的随机语料库，支持自定义“秘书”话术。
+1. 将 `config/config.ini.template` 复制为 `config/config.ini`。
+2. 填入您的火山引擎 AK/SK、ASR Token 以及豆包大模型的 API Key 与 Endpoint ID。
 
 ## 3. 使用指南 (Usage)
 
-### 核心功能：销售分析 (Analyze)
-分析流程：**输入 (语音/文本) -> 文本润色 -> AI 结构化提炼 -> 数据补全校验 -> 对话式修订 -> 归档保存。**
-
-#### 方式一：语音分析 (麦克风/文件)
+### 模式一：启动图形化界面 (推荐)
+直接运行以下命令，系统将在浏览器中打开一个“智能秘书”聊天窗口：
 ```bash
-# 使用麦克风直接录音（按回车结束）
-python src/main.py analyze --microphone
+python src/main.py analyze
+```
+*   **功能**：侧边栏上传音频、主窗口实时对话、动态渲染结构化报表。
 
-# 指定录音文件路径
-python src/main.py analyze --audio "./data/tmp/test.wav"
+### 模式二：命令行模式 (CLI)
+适合在终端快速操作或进行脚本集成：
+```bash
+# 启动交互式 CLI
+python src/main.py analyze --cli
+
+# 直接分析指定文本
+python src/main.py analyze --cli --content "今天聊了个大单子..."
 ```
 
-#### 方式二：文本分析
-```bash
-python src/main.py analyze --content "今天跟王经理沟通了..."
-```
-
-### 对话式修订 (Interactive Modification)
-分析完成后，系统将展示精美的结构化报表。若发现内容有误，您不再需要手动编辑复杂的 JSON：
-1.  输入 `m`: 进入修改模式。
-2.  直接输入自然语言指令，例如：
-    *   “把预算改成 100 万”
-    *   “客户姓名记错了，是李四”
-    *   “增加一个竞争对手：赛立信”
-3.  系统将通过 AI 自动理解并更新报表。
-
-### 其他操作
-*   输入 `s`: 确认并保存记录至本地。
-*   输入 `d`: 丢弃本次分析结果。
-
-## 📁 目录结构说明
+## 📁 目录结构
 ```text
 LinkSell/
-├── config/             # 配置文件 (ini) 和 AI 提示词 (txt)
-├── data/               # 数据存储目录（JSON 数据文件及录音文件）
-├── src/                # 源代码目录
-│   ├── services/       # 业务逻辑服务层 (AI 处理, ASR 识别)
-│   └── main.py         # CLI 应用程序入口
-└── .venv/              # Python 虚拟环境目录
+├── config/             # 配置文件、系统 Prompt 及 UI 语料库
+├── data/               # 本地 JSON 数据库及录音备份
+├── src/
+│   ├── core/           # 核心控制器 (Controller)
+│   ├── gui/            # Streamlit 界面实现
+│   ├── services/       # ASR 与 LLM 底层服务
+│   └── main.py         # 系统入口
+└── requirements.txt    # 依赖清单
 ```
 
-## 💾 数据存储说明
-LinkSell 目前采用**本地 JSON 文件**作为轻量级数据库。
-*   **默认位置**: `data/sales_data.json`（可在 `config.ini` 中修改）。
-*   **数据安全**: 所有数据均存储在您的本地磁盘，不上传至任何第三方云端（除 AI 分析过程中的临时传输）。
-*   **格式**: 这是一个标准的 JSON 数组，您可以随时使用文本编辑器查看或备份。
+## 💾 数据存储
+LinkSell 坚持**本地优先**原则：
+*   **数据库**: `data/sales_data.json`。
+*   **独立备份**: 每次保存均会在 `data/records/` 生成以项目名命名的独立 JSON 文件。
 
 ## 🤝 贡献与支持
-如有任何问题或建议，欢迎提交 Issue 或联系项目维护者。
+如有任何问题或建议，欢迎提交 Issue。

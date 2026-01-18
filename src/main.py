@@ -356,16 +356,35 @@ def record(note_type: str = typer.Option(..., prompt="请输入记录类型(meet
     print(f"收到！类型：{note_type}, 内容：{content}")
     print("[dim]提示：此命令尚未连接后端逻辑，建议使用 analyze 命令。[/dim]")
 
+def launch_gui():
+    """启动 Streamlit 图形界面"""
+    import subprocess
+    print("[green]正在启动 LinkSell 图形界面...[/green]")
+    # 获取 app.py 的绝对路径
+    gui_path = Path(__file__).parent / "gui" / "app.py"
+    try:
+        # 使用 sys.executable -m streamlit 确保使用当前 Python 环境
+        subprocess.run([sys.executable, "-m", "streamlit", "run", str(gui_path)], check=True)
+    except KeyboardInterrupt:
+        print("[dim]图形界面已关闭。[/dim]")
+
 @app.command()
 def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼的对话/会议文本内容"),
             audio_file: str = typer.Option(None, "--audio", "-a", help="要识别的录音文件路径 (支持 wav/mp3)"),
             use_mic: bool = typer.Option(False, "--microphone", "-m", help="使用麦克风直接录音"),
             save: bool = typer.Option(False, "--save", "-s", help="是否直接保存结果"),
-            debug: bool = typer.Option(False, "--debug", help="开启调试模式，显示详细日志")):
+            debug: bool = typer.Option(False, "--debug", help="开启调试模式，显示详细日志"),
+            cli: bool = typer.Option(False, "--cli", help="强制使用命令行模式 (CLI)")):
     """
     核心功能：分析销售数据。
-    支持输入文本或语音文件，调用 AI 进行结构化提炼，并提供交互式编辑与保存功能。
+    默认启动图形界面 (GUI)。使用 --cli 参数可进入命令行模式。
     """
+    # 如果没有指定 --cli，且没有提供任何具体的输入参数（纯交互模式），则启动 GUI
+    if not cli and not any([content, audio_file, use_mic]):
+        launch_gui()
+        return
+
+    # --- 以下为原 CLI 逻辑 ---
     
     # 0. 优先处理麦克风输入
     if use_mic:
