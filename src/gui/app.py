@@ -59,6 +59,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Init Controller & State ---
+if "ui_templates" not in st.session_state:
+    try:
+        with open("config/ui_templates.json", "r", encoding="utf-8") as f:
+            st.session_state.ui_templates = json.load(f)
+    except:
+        st.session_state.ui_templates = {}
+
+def get_ui_text(key, default=""):
+    import random
+    texts = st.session_state.ui_templates.get(key, [])
+    return random.choice(texts) if texts else default
+
 if "controller" not in st.session_state:
     try:
         st.session_state.controller = LinkSellController()
@@ -67,7 +79,7 @@ if "controller" not in st.session_state:
         st.stop()
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "有什么需要帮忙的么"}]
+    st.session_state.messages = [{"role": "assistant", "content": get_ui_text("greeting", "有什么需要帮忙的么")}]
 
 if "sales_data" not in st.session_state:
     st.session_state.sales_data = None
@@ -128,7 +140,7 @@ def render_report(data):
     """Renders the sales data nicely in Streamlit."""
     if not data: return
     with st.container(border=True):
-        st.markdown("### 📊 销售小纪")
+        st.markdown("### 📊 商机详情")
         c1, c2, c3 = st.columns([1, 1, 2])
         with c1: st.markdown(f"**🗣️ 类型**: {data.get('record_type', 'N/A')}")
         with c2: st.markdown(f"**👨‍💼 销售**: {data.get('sales_rep', 'N/A')}")
@@ -155,7 +167,12 @@ def render_report(data):
                 proj_name = opp.get("project_name", "未命名项目")
                 is_new = "✨ 新项目" if opp.get("is_new_project") else "🔄 既有项目"
                 st.markdown(f"**{proj_name}** ({is_new})")
-                st.markdown(f"- **阶段**: {opp.get('stage', '未知')}")
+                
+                # 数字化转换显示
+                stage_key = str(opp.get("opportunity_stage", ""))
+                stage_name = st.session_state.controller.stage_map.get(stage_key, "未知阶段")
+                st.markdown(f"- **阶段**: :blue[{stage_name}]")
+                
                 st.markdown(f"- **预算**: :green[{opp.get('budget', '未知')}]")
                 st.markdown(f"- **时间**: {opp.get('timeline', '未知')}")
                 st.markdown(f"- **流程**: {opp.get('procurement_process', '未知')}")
@@ -165,10 +182,10 @@ def render_report(data):
                 if comps:
                     for c in comps: st.markdown(f"  - {c}")
                 else: st.caption("  无明确竞争对手")
-                st.markdown("**🛠️ 我方参与技术**")
-                techs = opp.get("tech_stack", [])
-                if techs:
-                    for t in techs: st.markdown(f"  - {t}")
+                st.markdown("**🧑‍💻 我方技术人员**")
+                staffs = opp.get("technical_staff", [])
+                if staffs:
+                    for s in staffs: st.markdown(f"  - {s}")
                 else: st.caption("  未指定")
             else: st.caption("暂未发现明确商机")
         st.divider()
@@ -208,10 +225,7 @@ def reset_state():
     st.session_state.step = "input"
     st.session_state.missing_fields_queue = []
     st.session_state["chat_input_area"] = ""
-    
-    # 重新说第一句话，但作为追加，而不是重置
-    greeting = "有什么需要帮忙的么"
-    add_ai_message(f"✅ 记录已存档！\n\n{greeting}")
+    st.session_state.last_polished_text = ""
     st.rerun()
 
 def handle_logic(prompt):
@@ -223,30 +237,93 @@ def handle_logic(prompt):
         intent = st.session_state.controller.get_intent(prompt)
         
         if intent == "QUERY":
-            with st.spinner("正在查账..."):
+            with st.spinner(get_ui_text("processing_query", "正在检索...")):
                 answer = st.session_state.controller.handle_query(prompt)
-                add_ai_message(answer)
+                if answer == "__EMPTY_DB__":
+                    add_ai_message(get_ui_text("empty_db_hint"))
+                elif answer == "__ERROR_CONFIG__":
+                    add_ai_message(get_ui_text("query_error", "配置无效").format(error="配置无效"))
+                else:
+                    add_ai_message(answer)
                 return
         
         if intent == "OTHER":
-            add_ai_message("抱歉哈，这事儿超出了我的业务范围。我是专门帮您整理销售记录的，或者是查查旧账，有什么这方面我能帮您的么？")
+            add_ai_message(get_ui_text("intent_other_hint"))
             return
             
         # 2. 如果是 ANALYZE，走原有逻辑
-        with st.spinner("分析中..."):
+        with st.spinner(get_ui_text("analysis_start", "分析中...")):
             polished = st.session_state.controller.polish(prompt)
+            st.session_state.last_polished_text = polished
             data = st.session_state.controller.analyze(polished)
             st.session_state.sales_data = data
             add_report_message(data)
-            missing_map = st.session_state.controller.get_missing_fields(data)
-            if missing_map:
-                st.session_state.step = "missing_fields"
-                st.session_state.missing_fields_queue = list(missing_map.items())
-                key, (name, _) = st.session_state.missing_fields_queue[0]
-                add_ai_message(f"我注意到 **{name}** 还没填，需要补充吗？(没有请回 '无')")
-            else:
-                st.session_state.step = "review"
-                add_ai_message("分析完成！确认无误请点击下方按钮保存。")
+            
+            # 变阵！先问要不要转商机
+            st.session_state.step = "ask_create_opportunity"
+            add_ai_message(get_ui_text("ask_create_opportunity"))
+            return
+
+    elif st.session_state.step == "ask_create_opportunity":
+        from src.services.llm_service import judge_affirmative
+        if judge_affirmative(prompt, st.session_state.controller.api_key, st.session_state.controller.endpoint_id):
+            st.session_state.step = "search_project"
+            add_ai_message(get_ui_text("ask_search_project"))
+        else:
+            st.session_state.step = "review"
+            add_ai_message("明白，那就仅作为一条普通记录保存。您看还有什么要改的吗？")
+
+    elif st.session_state.step == "search_project":
+        matches = st.session_state.controller.search_opportunities(prompt)
+        if not matches:
+            add_ai_message(f"未找到包含“{prompt}”的项目，请重新输入关键字，或点击下方按钮新建商机。")
+        elif len(matches) == 1:
+            proj_name = matches[0]
+            st.session_state.sales_data["project_opportunity"]["project_name"] = proj_name
+            add_ai_message(get_ui_text("project_locked_feedback", project_name=proj_name).format(project_name=proj_name))
+            # 自动流转到补全开始阶段
+            st.session_state.step = "missing_fields_start"
+            # 强制触发一次逻辑以显示第一个问题
+            handle_logic("confirm_fix")
+        else:
+            st.session_state.search_matches = matches
+            st.session_state.step = "select_project"
+            m_list = "\n".join([f"{i+1}. {m}" for i, m in enumerate(matches)])
+            add_ai_message(get_ui_text("multiple_matches_found", matches_list=m_list).format(matches_list=m_list))
+
+    elif st.session_state.step == "select_project":
+        matches = st.session_state.get("search_matches", [])
+        selected_name = None
+        
+        # 尝试按数字选
+        if prompt.isdigit():
+            idx = int(prompt) - 1
+            if 0 <= idx < len(matches):
+                selected_name = matches[idx]
+        # 尝试按全名选
+        if not selected_name and prompt in matches:
+            selected_name = prompt
+            
+        if selected_name:
+            st.session_state.sales_data["project_opportunity"]["project_name"] = selected_name
+            add_ai_message(get_ui_text("project_locked_feedback", project_name=selected_name).format(project_name=selected_name))
+            st.session_state.step = "missing_fields_start"
+            handle_logic("confirm_fix")
+        else:
+            add_ai_message("抱歉，我没对上号。请重新输入数字编号或项目全名。")
+
+    elif st.session_state.step == "missing_fields_start":
+        # 这个隐藏步骤用来初始化 missing_fields 队列
+        missing_map = st.session_state.controller.get_missing_fields(st.session_state.sales_data)
+        if missing_map:
+            st.session_state.step = "missing_fields"
+            st.session_state.missing_fields_queue = list(missing_map.items())
+            key, (name, _) = st.session_state.missing_fields_queue[0]
+            add_ai_message(f"为了记录完整，我注意到 **{name}** 还没填，需要补充吗？")
+        else:
+            st.session_state.step = "review"
+            add_ai_message("好的，商机档案已就绪。确认无误请点击下方按钮保存。")
+
     elif st.session_state.step == "missing_fields":
         if st.session_state.missing_fields_queue:
             curr_key, (curr_name, _) = st.session_state.missing_fields_queue[0]
@@ -279,16 +356,37 @@ display_chat()
 
 # --- BOTTOM UI ---
 with st.container():
+    # 统一动作栏 (Action Bar)
     if st.session_state.step == "review":
-        rb1, rb2, _ = st.columns([1, 1, 4])
-        with rb1:
+        act_c1, act_c2, _ = st.columns([1, 1, 4])
+        with act_c1:
             if st.button("✅ 确认保存", type="primary", use_container_width=True):
-                rid, _ = st.session_state.controller.save(st.session_state.sales_data)
-                st.toast(f"保存成功！ID: {rid}"); time.sleep(1); reset_state()
-        with rb2:
-            if st.button("❌ 放弃", use_container_width=True): reset_state()
+                # 传入润色后的全文，由 Controller 决定是否摘要
+                rid, _ = st.session_state.controller.save(
+                    st.session_state.sales_data, 
+                    st.session_state.get("last_polished_text", "")
+                )
+                st.toast(f"保存成功！ID: {rid}")
+                add_ai_message(get_ui_text("save_success", "记录已成功存档。"))
+                time.sleep(0.5)
+                reset_state()
+        with act_c2:
+            if st.button("❌ 放弃", use_container_width=True):
+                add_ai_message(f"{get_ui_text('operation_cancel', '已放弃。')} {get_ui_text('greeting', '有什么需要帮忙的么？')}")
+                reset_state()
+            
+    elif st.session_state.step in ["search_project", "select_project"]:
+        act_c1, act_c2, _ = st.columns([1, 1, 4])
+        with act_c1:
+            if st.button("➕ 新建商机", type="primary", use_container_width=True):
+                st.session_state.step = "missing_fields_start"
+                st.rerun()
+        with act_c2:
+            if st.button("❌ 取消", use_container_width=True):
+                add_ai_message(f"{get_ui_text('operation_cancel', '已取消。')} {get_ui_text('greeting', '有什么需要帮忙的么？')}")
+                reset_state()
 
-    # Unified Bar
+    # Unified Bar (输入框区域)
     c_plus, c_in, c_mic, c_send = st.columns([0.8, 7.2, 0.8, 1.2])
     with c_plus:
         pop = st.popover("➕", use_container_width=True)

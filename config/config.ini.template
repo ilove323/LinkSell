@@ -24,7 +24,15 @@ cluster = volcengine_input_common
 # 销售数据存储路径
 data_file = data/sales_data.json
 
+[opportunity_stages]
+# 商机阶段映射 (存储时仅记录数字，显示时根据此映射查找)
+1 = P1 需求确认
+2 = P2 沟通交流
+3 = P3 商务谈判
+4 = P4 签订合同
+
 [global]
+# 默认记录者姓名
+default_recorder = 陈一骏
 # Hugging Face 镜像站地址 (解决国内无法下载本地 Embedding 模型的问题)
-# 如果你能科学上网，可以留空；否则建议使用 https://hf-mirror.com
 hf_endpoint = https://hf-mirror.com

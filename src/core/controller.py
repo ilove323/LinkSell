@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from src.services.llm_service import (
     analyze_text, refine_sales_data, polish_text, 
-    update_sales_data, is_sales_content, classify_intent, query_sales_data
+    update_sales_data, is_sales_content, classify_intent, query_sales_data, summarize_text
 )
 from src.services.asr_service import transcribe_audio
 from src.services.vector_service import VectorService
@@ -18,10 +18,12 @@ class LinkSellController:
         if self.config_path.exists():
             self.config.read(self.config_path)
         
-        # 1. 设置全局环境变量 (解决模型下载问题)
+        # 1. 设置全局环境变量与默认记录者
         hf_endpoint = self.config.get("global", "hf_endpoint", fallback=None)
         if hf_endpoint:
             os.environ["HF_ENDPOINT"] = hf_endpoint
+        
+        self.default_recorder = self.config.get("global", "default_recorder", fallback="陈一骏")
             
         self.api_key = self.config.get("doubao", "api_key", fallback=None)
         self.endpoint_id = self.config.get("doubao", "analyze_endpoint", fallback=None)
@@ -33,11 +35,16 @@ class LinkSellController:
         if self.asr_resource == "volc.bigasr.sauc.duration":
              self.asr_resource = "volc.seedasr.auc"
 
-        # 2. 初始化本地向量库
+        # 2. 加载商机阶段映射
+        self.stage_map = {}
+        if self.config.has_section("opportunity_stages"):
+            self.stage_map = {k: v for k, v in self.config.items("opportunity_stages")}
+
+        # 3. 初始化本地向量库
         try:
             self.vector_service = VectorService()
         except Exception as e:
-            print(f"[yellow]警告：本地向量模型加载失败({{e}})锛回退到普通查询模式。[/yellow]")
+            print(f"[yellow]警告：本地向量模型加载失败({e})，将回退到普通查询模式。[/yellow]")
             self.vector_service = None
 
     def validate_llm_config(self):
@@ -62,21 +69,17 @@ class LinkSellController:
         return analyze_text(text, self.api_key, self.endpoint_id)
 
     def get_intent(self, text):
-        """判断意图：ANALYZE, QUERY, OTHER"""
         if not self.validate_llm_config():
             return "ANALYZE"
         return classify_intent(text, self.api_key, self.endpoint_id)
 
     def handle_query(self, query_text):
-        """执行查询逻辑：先从向量库检索最相关的上下文，再由 LLM 回答。"""
         if not self.validate_llm_config():
-            return "无法执行查询：配置无效。"
+            return "__ERROR_CONFIG__"
             
         if self.vector_service:
-            # 语义搜索：薅出最相关的 5 条记录
             history = self.vector_service.search(query_text, top_k=5)
         else:
-            # 回退模式：读取 JSON 库最后 10 条
             data_file_path = Path(self.config.get("storage", "data_file", fallback="data/sales_data.json"))
             history = []
             if data_file_path.exists():
@@ -87,28 +90,27 @@ class LinkSellController:
                     except: pass
         
         if not history:
-            return "目前数据库里还是空的，老大哥也没法凭空给你变出数据来啊！"
+            return "__EMPTY_DB__"
             
         return query_sales_data(query_text, history, self.api_key, self.endpoint_id)
 
     def check_is_sales(self, text):
-        """判断内容是否为销售相关。"""
         if not self.validate_llm_config():
             return True
         return is_sales_content(text, self.api_key, self.endpoint_id)
 
     def get_missing_fields(self, data):
-        """识别缺失的必填字段。"""
         if "project_opportunity" not in data:
             data["project_opportunity"] = {}
 
         required_config = {
             "sales_rep": ("👨‍💼 我方销售", None),
+            "opportunity_stage": ("📈 商机阶段 (1:需求确认 2:沟通交流 3:商务谈判 4:签订合同)", "project_opportunity"),
             "timeline": ("⏱️ 时间节点", "project_opportunity"),
             "budget": ("💰 预算金额", "project_opportunity"),
             "procurement_process": ("📝 采购流程", "project_opportunity"),
             "competitors": ("⚔️ 竞争对手", "project_opportunity"),
-            "tech_stack": ("🛠️ 我方参与技术", "project_opportunity"),
+            "technical_staff": ("🧑‍💻 我方技术人员", "project_opportunity"),
             "payment_terms": ("💳 付款方式", "project_opportunity")
         }
         
@@ -116,7 +118,6 @@ class LinkSellController:
         for field_key, (field_name, parent_key) in required_config.items():
             target_dict = data.get(parent_key) if parent_key else data
             val = target_dict.get(field_key) if target_dict else None
-            
             is_missing = False
             if val is None: is_missing = True
             elif isinstance(val, str) and (not val.strip() or val in ["未知", "未指定", "N/A"]): is_missing = True
@@ -132,11 +133,19 @@ class LinkSellController:
     def update(self, data, instruction):
         return update_sales_data(data, instruction, self.api_key, self.endpoint_id)
 
-    def save(self, record):
-        """保存记录：双写模式 (JSON DB + Vector DB)。"""
+    def save(self, record, raw_content=""):
+        """
+        保存商机信息：以项目名为唯一标识，聚合存储。
+        raw_content: polish_text.txt 润色后的原始文字。
+        """
         data_file_path = Path(self.config.get("storage", "data_file", fallback="data/sales_data.json"))
         
-        # 1. 存入 JSON 主库
+        # 1. 文字提炼 (如果润色文本 > 500字则生成摘要)
+        note_text = raw_content if raw_content else record.get("summary", "")
+        if len(note_text) > 500:
+            note_text = summarize_text(note_text, self.api_key, self.endpoint_id)
+
+        # 2. 读取主库
         if data_file_path.exists():
             with open(data_file_path, "r", encoding="utf-8") as f:
                 try: db_data = json.load(f)
@@ -146,32 +155,48 @@ class LinkSellController:
             data_file_path.parent.mkdir(parents=True, exist_ok=True)
 
         now = datetime.datetime.now()
-        record["created_at"] = now.isoformat()
-        record_id = len(db_data) + 1
-        record["id"] = record_id
-        db_data.append(record)
+        proj_info = record.get("project_opportunity", {})
+        proj_name = proj_info.get("project_name", "未命名项目")
+        
+        # 3. 构造本次记录的小记 (含时间、记录者、精修文本)
+        new_log_entry = {
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "recorder": self.default_recorder,
+            "content": note_text
+        }
+
+        # 4. 寻找或创建商机项
+        target_proj = next((p for p in db_data if p.get("project_name") == proj_name), None)
+        
+        if target_proj:
+            # 更新商机属性
+            for key, val in proj_info.items():
+                if val is not None and val != "":
+                    target_proj[key] = val
+            target_proj.setdefault("customer_info", {}).update(record.get("customer_info", {}))
+            # 追加到记录志数组
+            target_proj.setdefault("record_logs", []).append(new_log_entry)
+            target_proj["updated_at"] = now.isoformat()
+            record_id = target_proj.get("id", 0)
+        else:
+            # 新建商机
+            new_proj = proj_info.copy()
+            new_proj["project_name"] = proj_name
+            new_proj["customer_info"] = record.get("customer_info", {})
+            new_proj["record_logs"] = [new_log_entry]
+            new_proj["created_at"] = now.isoformat()
+            new_proj["updated_at"] = now.isoformat()
+            record_id = len(db_data) + 1
+            new_proj["id"] = record_id
+            db_data.append(new_proj)
         
         with open(data_file_path, "w", encoding="utf-8") as f:
             json.dump(db_data, f, ensure_ascii=False, indent=2)
             
-        # 2. 存入向量库
+        # 5. 向量库同步
         if self.vector_service:
             try:
                 self.vector_service.add_record(record_id, record)
-            except Exception as e:
-                print(f"[yellow]向量存入失败：{{e}}[/yellow]")
+            except: pass
             
-        # 3. 备份独立文件
-        proj_name = record.get("project_opportunity", {}).get("project_name", "未命名项目")
-        safe_proj_name = re.sub(r'[\\/*?:",<>|]', "", str(proj_name)).strip().replace(" ", "_")
-        time_str = now.strftime("%Y%m%d_%H%M%S")
-        filename = f"{safe_proj_name}-{time_str}.json"
-        
-        records_dir = data_file_path.parent / "records"
-        records_dir.mkdir(parents=True, exist_ok=True)
-        record_path = records_dir / filename
-        
-        with open(record_path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
-            
-        return record["id"], str(record_path)
+        return record_id, "data/records/backup.json"

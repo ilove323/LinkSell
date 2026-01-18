@@ -4,63 +4,24 @@ LinkSell 是一个全能的销售数据采集与分析系统。它集成了**火
 
 ## ✨ 核心功能
 
-*   **🖼️ 现代化图形界面 (GUI)**：基于 Streamlit 的聊天式网页界面，支持流式报表展示、交互式补全及一键智能保存。
-*   **💻 极客命令行模式 (CLI)**：通过 `--cli` 参数，在终端享受基于 Rich 的高性能文本交互。
-*   **🎙️ 强化版语音转写**：基于 Seed ASR 大模型，采用**异步任务提交+主动轮询**机制，确保长音频识别的极高稳定性。
-*   **🛡️ 业务内容护栏**：内置 **Sales Filter**，自动识别并过滤非销售/非业务相关的干扰内容。
-*   **🧠 智能意图识别**：支持自然语言确认逻辑（Affirmative Judge），能精准读懂您“存一下”、“妥了”等保存指令。
-*   **✨ 文本润色与格式化**：自动剔除口语赘余，将凌乱的录音实时转化为板正的书面记录。
-*   **📝 对话式修订**：支持用自然语言直接下达修改指令，LLM 实时重构 JSON 数据。
-*   **💾 稳健存储系统**：自动进行文件名安全脱敏，支持主库存储与带时间戳的独立记录双重备份。
+*   **🗃️ CRM 级商机归档**：不再是零散记录。系统自动按“项目名”聚合所有谈话，支持追加历史笔记，实现单一商机的全生命周期追踪。
+*   **🔍 本地语义检索 (RAG)**：内置本地 Embedding 引擎与向量数据库（ChromaDB）。支持“张三去年谈了哪些项目？”等自然语言查询，无需云端向量成本。
+*   **🧠 智能意图识别**：自动分流“录音分析”与“历史查询”需求，甚至能读懂您的保存与修改意图。
+*   **📝 自动摘要提炼**：针对长达数千字的会议记录，系统自动提炼 500 字以内的商务摘要，确保存储的高效与可读性。
+*   **📈 数字化阶段管理**：商机阶段 (P1-P4) 全数字化存储且高度可配置，支持强制查漏补缺。
+*   **🎙️ 强化版 ASR 识别**：基于 Seed ASR，支持长语音轮询及静音/低音量异常提醒。
 
 ## 🚀 快速开始
 
-### 1. 环境准备
-```bash
-cd LinkSell
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
 ### 2. 配置密钥
 1. 将 `config/config.ini.template` 复制为 `config/config.ini`。
-2. 填入您的火山引擎 AK/SK、ASR Token 以及豆包大模型的 API Key 与 Endpoint ID。
-
-## 3. 使用指南 (Usage)
-
-### 模式一：图形化界面 (推荐)
-```bash
-python src/main.py analyze
-```
-系统将自动打开浏览器。您可以使用底栏的 **“➕”** 按钮进行语音输入，并直接在对话框中下达指令。确认无误后点击 **“✅ 确认保存”**。
-
-### 模式二：命令行模式 (CLI)
-```bash
-# 启动交互式 CLI
-python src/main.py analyze --cli
-
-# 分析指定文本
-python src/main.py analyze --cli --content "对话文本..."
-```
-
-## 📁 目录结构
-```text
-LinkSell/
-├── config/             # 配置文件、Prompt 模板、UI 语料库
-├── data/               # 本地数据库 (JSON) 及附件存储
-├── src/
-│   ├── core/           # 核心控制器 (Controller) - 逻辑大脑
-│   ├── cli/            # 终端界面实现 (View - CLI)
-│   ├── gui/            # Web 界面实现 (View - GUI)
-│   ├── services/       # API 接入层 (ASR, LLM)
-│   └── main.py         # 路由分流入口
-└── requirements.txt
-```
+2. 填入您的火山引擎密钥及豆包模型参数。
+3. **国内用户推荐**：在 `[global]` 中配置 `hf_endpoint = https://hf-mirror.com` 以秒下 Embedding 模型。
 
 ## 💾 数据存储
-*   **主库**: `data/sales_data.json`
-*   **独立记录**: `data/records/项目名-时间戳.json`
+*   **CRM 主库**: `data/sales_data.json` (按项目聚合)
+*   **向量库**: `data/vector_db/` (语义检索索引)
+*   **备份**: `data/records/` (独立记录文件)
 
 ## 🤝 贡献与支持
 如有任何问题，欢迎提交 Issue。

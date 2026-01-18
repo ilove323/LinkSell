@@ -151,6 +151,29 @@ def judge_affirmative(user_input: str, api_key: str, endpoint_id: str) -> bool:
     except:
         return False
 
+def summarize_text(content: str, api_key: str, endpoint_id: str) -> str:
+    """
+    将超长文本提炼为 500 字以内的摘要。
+    """
+    client = Ark(api_key=api_key)
+    system_prompt_template = load_prompt("summarize_note")
+    
+    system_prompt = system_prompt_template.replace("{{text}}", content)
+
+    try:
+        completion = client.chat.completions.create(
+            model=endpoint_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "请开始提炼。"},
+            ],
+            temperature=0.3,
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        # 如果报错，截断返回
+        return content[:500] + "..."
+
 def classify_intent(text: str, api_key: str, endpoint_id: str) -> str:
     """
     判断用户的意图：ANALYZE, QUERY, 或 OTHER。

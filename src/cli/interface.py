@@ -54,7 +54,7 @@ def get_random_ui(key: str, **kwargs) -> str:
 # --- View Components ---
 
 def display_result_human_readable(data: dict):
-    table = Table(title="[bold green]📊 销售小纪[/bold green]", show_header=False, box=None)
+    table = Table(title="[bold green]📊 商机档案[/bold green]", show_header=False, box=None)
     table.add_column("Key", style="bold cyan")
     table.add_column("Value")
     
@@ -83,13 +83,18 @@ def display_result_human_readable(data: dict):
     if opp:
         proj_name = opp.get("project_name", "未命名项目")
         opp_tree.add(f"项目: [bold]{proj_name}[/bold] ({'新项目' if opp.get('is_new_project') else '既有项目'})")
-        opp_tree.add(f"阶段: {opp.get('stage', '未知')}")
+        
+        # 数字化转换
+        stage_key = str(opp.get("opportunity_stage", ""))
+        stage_name = controller.stage_map.get(stage_key, "未知")
+        opp_tree.add(f"阶段: [blue]{stage_name}[/blue]")
+        
         opp_tree.add(f"预算: [green]{opp.get('budget', '未知')}[/green]")
         opp_tree.add(f"时间: {opp.get('timeline', '未知')}")
         comp_node = opp_tree.add("⚔️ 竞争对手")
         for c in opp.get("competitors", []): comp_node.add(c)
-        tech_node = opp_tree.add("🛠️ 我方参与技术")
-        for t in opp.get("tech_stack", []): tech_node.add(t)
+        staff_node = opp_tree.add("🧑‍💻 我方技术人员")
+        for s in opp.get("technical_staff", []): staff_node.add(s)
     else: opp_tree.add("[dim]暂未发现明确商机[/dim]")
     console.print(opp_tree); console.print("")
 
