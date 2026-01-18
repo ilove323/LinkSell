@@ -291,16 +291,19 @@ def handle_list_logic(content):
     
     # --- 核心修复：处理泛指逻辑 ---
     is_full_list = False
-    if search_term.upper() == "ALL" or not search_term or search_term == "Unknown":
+    # 把它转成大写、去空格、去各种乱七八糟的符号再比对，看它还敢不敢装犊子
+    clean_term = search_term.strip().upper().replace("`", "").replace("'", "").replace('"', "")
+    
+    if clean_term in ["ALL", "未知", "UNKNOWN"] or not clean_term:
         is_full_list = True
-    elif search_term in ["商机", "项目", "单子", "列表"]: # 兜底过滤通用词
+    elif clean_term in ["商机", "项目", "单子", "列表", "全部", "所有"]: # 增加更多中文识别
         is_full_list = True
         
     if is_full_list:
-        console.print("[dim]正在展示所有商机清单...[/dim]")
+        console.print("[bold cyan]📋 正在获取全量商机列表...[/bold cyan]")
         results = controller.list_opportunities() # 不传 filter 就是全量
     else:
-        console.print(f"[dim]正在列出符合 '{search_term}' 的商机...[/dim]")
+        console.print(f"[dim]🔍 正在根据关键核心词 '{search_term}' 检索商机...[/dim]")
         def simple_filter(data):
             dump_str = json.dumps(data, ensure_ascii=False)
             return search_term.lower() in dump_str.lower()

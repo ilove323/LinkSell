@@ -126,8 +126,8 @@ class LinkSellController:
             )
             term = completion.choices[0].message.content.strip()
             if "Unknown" in term: return text
-            # 去除可能的引号
-            return term.replace('"', '').replace("'", "")
+            # 去除可能的引号和反引号，并且前后去空格，省得这小瘪犊子坑咱
+            return term.replace('"', '').replace("'", "").replace("`", "").strip()
         except:
             return text
 
