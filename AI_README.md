@@ -4,7 +4,7 @@
 
 ## 1. 系统架构 (Architecture)
 
-LinkSell 2.0 采用严格的 **MVC (Model-View-Controller)** 分层架构，确保逻辑与展示彻底分离。
+LinkSell 2.0 采用严格的 **MVC (Model-View-Controller)** 分层架构，确保业务逻辑与展示界面彻底分离。
 
 ### 1.1 核心层 (Controller)
 *   **文件**: `src/core/controller.py`
@@ -22,60 +22,49 @@ LinkSell 2.0 采用严格的 **MVC (Model-View-Controller)** 分层架构，确�
 ### 1.2 视图层 (View) - GUI (Web)
 *   **文件**: `src/gui/app.py`
 *   **框架**: Streamlit
-*   **职责**: 仅负责渲染界面和捕获用户事件，**严禁**包含业务逻辑。
-*   **交互模式**:
-    *   **Popover**: 集成音频上传/录制入口，悬浮于输入框上方。
-    *   **Interleaved Reporting**: 报表卡片随对话流动态插入，非置顶。
-    *   **Action Buttons**: 归档操作通过“保存/放弃”按钮触发，而非自然语言。
+*   **职责**: 负责 Web 端的界面渲染和用户事件捕获。**严禁**直接包含 API 调用或复杂的业务判断。
 
 ### 1.3 视图层 (View) - CLI (Terminal)
-*   **文件**: `src/main.py`
+*   **目录**: `src/cli/`
+*   **文件**: `src/cli/interface.py`
 *   **框架**: Typer + Rich
-*   **职责**: 程序的入口点 + 命令行交互实现。
-*   **逻辑**: 初始化 `LinkSellController`，根据 `--cli` 参数决定启动 GUI 还是 CLI 循环。
+*   **职责**: 负责终端环境下的交互实现。包含 Rich 表格渲染、CLI 专属交互循环以及命令行语料加载。
 
-### 1.4 服务层 (Services)
+### 1.4 路由分流器 (Entry Point)
+*   **文件**: `src/main.py`
+*   **职责**: 程序的统一入口。根据 `--cli` 参数，决定将控制权移交给 `src/cli/interface.py` 还是启动 `src/gui/app.py`。
+
+### 1.5 服务层 (Services)
 *   **目录**: `src/services/`
-*   **职责**: 无状态的底层 API 封装。
-    *   `asr_service.py`: 封装 Seed ASR V3 协议 (Submit/Query)。
-    *   `llm_service.py`: 封装 Volcengine Ark Runtime。
+*   **职责**: 无状态的底层 API 封装（ASR, LLM）。由 Controller 统一调用。
 
 ## 2. 核心工作流 (Workflow)
 
 ### 2.1 分析闭环 (The Analysis Loop)
-1.  **输入**: 用户通过 Popover (GUI) 或 参数 (CLI) 提供音频/文本。
-2.  **润色 (Polish)**: `Controller.polish()` 将口语转化为书面语。
-3.  **分析 (Analyze)**: `Controller.analyze()` 提取 JSON 结构。
+1.  **输入**: 用户通过 UI 组件 (GUI) 或 命令行参数 (CLI) 提供音频/文本。
+2.  **润色 (Polish)**: 调用 `Controller.polish()`。
+3.  **分析 (Analyze)**: 调用 `Controller.analyze()`。
 4.  **补全 (Completion)**:
-    *   `Controller.get_missing_fields()` 扫描空值。
-    *   UI 层根据队列逐个询问用户。
-    *   `Controller.refine()` 写入补充值。
+    *   UI 层调用 `Controller.get_missing_fields()` 获取缺失列表。
+    *   UI 层引导用户输入补充信息。
+    *   UI 层调用 `Controller.refine()` 更新状态。
 5.  **修订 (Modification)**:
-    *   用户输入自然语言指令（如“把预算改成50万”）。
-    *   `Controller.update()` 调用 LLM 修改 JSON。
-    *   UI 重新渲染新报表。
+    *   用户输入自然语言修改意见。
+    *   UI 层调用 `Controller.update()` 并重新渲染。
 6.  **归档 (Save)**:
-    *   GUI: 点击按钮 -> `Controller.save()`。
-    *   CLI: 输入关键词 -> `Controller.save()`。
+    *   UI 层调用 `Controller.save()` 完成持久化。
 
 ## 3. 交互规范 (Interaction Guidelines)
 
 ### 3.1 智能秘书人格
-*   **语料库**: 所有界面提示语**必须**从 `config/ui_templates.json` 加载，严禁 Hardcode。
-*   **称呼**: 严禁使用“老板”等江湖气称呼，统一使用“您”或无主语的专业表达。
-*   **风格**: 温婉、专业、高效。
+*   **语料驱动**: 所有界面文本**必须**从 `config/ui_templates.json` 加载。
+*   **称呼**: 严禁使用“老板”称呼，统一使用“您”或专业商务语境。
 
 ### 3.2 报表展示
-*   **GUI**: 使用 `st.container(border=True)` 包裹，信息分栏展示（基础信息、客户/商机分栏、关键点/待办分栏）。
-*   **CLI**: 使用 Rich `Table` 和 `Tree` 组件，保持相同的分栏逻辑。
-*   **视觉流**: 报表应紧随用户的修改操作出现，形成“操作-反馈”闭环。
+*   **一致性**: 无论 GUI 还是 CLI，展示维度（基础信息、客户画像、商机概览、关键点/待办）必须保持一致。
+*   **反馈**: 每次数据更新后，必须立刻向用户展示最新的报表（流式展示）。
 
-## 4. 关键配置 (Configuration)
-*   **ASR 模型**: 必须锁定为 `volc.seedasr.auc` (Seed ASR 大模型)。
-*   **LLM 模型**: 通过 `config.ini` 中的 `analyze_endpoint` 指定。
-*   **数据路径**: 默认为 `data/sales_data.json`，自动生成 `data/records/` 备份。
-
-## 5. 开发禁忌 (Dont's)
-1.  **禁止** 在 `app.py` 或 `main.py` 中直接调用 `requests` 或 `volcengine` SDK。必须通过 `Controller`。
-2.  **禁止** 在 GUI 中使用侧边栏 (`st.sidebar`) 放置核心功能（如录音）。
-3.  **禁止** 混合使用“文本确认保存”和“按钮确认保存”——GUI 只认按钮。
+## 4. 开发禁忌 (Dont's)
+1.  **禁止** 在视图层 (`src/gui/` 或 `src/cli/`) 直接导入 `requests` 或 `volcengine` SDK。
+2.  **禁止** 在业务逻辑中使用 UI 相关的 print 或 st.write（应通过返回值由 UI 层处理）。
+3.  **禁止** 破坏 `LinkSellController` 作为唯一逻辑入口的原则。
