@@ -16,81 +16,49 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
     *   **职责**: 整个程序的指挥官。负责参数解析 (Typer)、界面渲染 (Rich) 和流程控制。
     *   **核心逻辑**:
         *   `init`: 创建 `data/sales_data.json` 和 `data/records/` 目录。
-        *   `analyze`: 实现了 **"AI 分析 -> 人话展示 -> 交互式编辑 (Edit Loop) -> 双重存储"** 的完整闭环。
-        *   `sanitize_filename`: 确保生成的独立文件名在任何操作系统上都合法。
-    *   **交互细节**: 使用 `typer.edit()` 调用系统编辑器，允许用户在保存前修正 AI 的 JSON 结果。
+        *   `analyze`: 实现了 **"语音转录 -> 文本润色 -> AI 分析 -> 数据完整性校验 -> 对话式修订 (Modification Loop) -> 持久化"** 的闭环。
+        *   `get_random_ui`: 实现了基于语料库的随机应答机制，通过 `config/ui_templates.json` 驱动。
 *   **`src/services/llm_service.py` (AI 服务层)**
     *   **职责**: 对接火山引擎 Ark Runtime。
     *   **逻辑**: 
-        *   `analyze_text`: 调用 LLM 分析原始文本，生成初始 JSON。
-        *   `refine_sales_data`: 接收用户补充的碎片化信息，结合原始数据进行校验、格式化（如统一金额单位）与合并。
-        *   **清洗逻辑**: 自动剥离 LLM 返回可能包含的 Markdown 标记 (```json)，确保返回纯净的字典对象。
+        *   `analyze_text`: 结构化分析原始文本。
+        *   `polish_text`: 对口语进行润色，提升分析准确度。
+        *   `update_sales_data`: **核心修订逻辑**。接收用户自然语言指令，结合原始 JSON 调用 LLM 生成修订后的版本。
+        *   `refine_sales_data`: 针对缺失字段进行针对性补全。
 *   **`src/services/asr_service.py` (语音服务层)**
-    *   **职责**: 对接火山引擎 ASR 大模型任务接口。
-    *   **逻辑**:
-        *   采用 **"提交 (Submit) -> 轮询 (Query)"** 的异步转同步模式。
-        *   基于用户验证通过的 V3 接口协议实现。
-        *   **鉴权**: 必须在 `[asr]` 配置项中提供 `app_id` 和 `access_token`。
-        *   **性能**: 内部包含轮询等待逻辑，对业务层保持同步调用体感。
-*   **`src/services/audio_capture.py` (录音服务层)**
-    *   **职责**: 提供跨平台的麦克风录音功能。
-    *   **逻辑**:
-        *   基于 `sounddevice` 和 `numpy` 采集音频数据。
-        *   监听用户键盘输入 (回车键) 以控制录音时长。
-        *   保存为标准 `.wav` 文件供 ASR 服务使用。
-*   **`src/services/__init__.py`**
-    *   **职责**: 暴露服务层接口，简化导入路径 (目前为空，作为包标识)。
+    *   **逻辑**: 对接火山引擎 **Seed ASR** 大模型任务接口，采用异步轮询机制。
+# ... (rest same)
 
 ### 2.2 配置文件
-*   **`config/config.ini`**: 包含 API 密钥（Doubao, Volcengine, ASR）、Endpoint ID 和文件路径。**严禁提交至 Git**。
+*   **`config/config.ini`**: 包含 API 密钥。
+*   **`config/ui_templates.json`**: 定义了“秘书”人格的随机语料库。
 *   **`config/prompts/`**: 存储 System Prompts。
-    *   `analyze_sales.txt`: 用于初始分析，定义了严格的 JSON 输出格式（含商机、客户画像、竞争对手等字段）。
-    *   `refine_sales.txt`: 用于数据校验，处理用户补录的碎片化信息。
+    *   `analyze_sales.txt`: 初始结构化提取。
+    *   `polish_text.txt`: 口语转书面。
+    *   `update_sales.txt`: **对话式修改专用提示词**。
+    *   `refine_sales.txt`: 字段缺失补全。
 
-**重要 ASR 配置说明**:
-ASR 服务使用大模型接口 (Big Model ASR)，其鉴权方式与普通 API 不同：
-*   **Access Token**: 必须使用火山引擎控制台生成的 Access Token，而非 Access Key。
-*   **Resource ID**: 必须设置为 `volc.bigasr.auc`。
+# ... (Schema same)
 
-## 3. 数据结构 (Data Schema)
-AI 分析后的数据结构（JSON）包含以下关键字段：
-*   `record_type`: 记录类型 (meeting/chat)。
-*   `sales_rep`: 我方销售负责人/记录人姓名。
-*   `customer_info`: 客户画像 (姓名, 公司, 职位, 联系方式)。
-*   `project_opportunity`: 商机详情 (项目名, 预算, 阶段, 技术栈, **时间节点**, **采购流程**, **付款方式**, **竞争对手**)。
-*   `key_points`: 核心要点列表。
-*   `action_items`: 待办事项/下一步计划。
-*   `sentiment`: 客户情感分析。
+### 5. 关键工作流
 
-## 4. 依赖管理
-*   `requirements.txt`: 
-    *   `typer`: 命令行界面。
-    *   `rich`: 终端美化。
-    *   `volcengine-python-sdk[ark]`: 火山引擎 SDK (含 Ark Runtime 扩展)。
-    *   `requests`: HTTP 请求。
-    *   `configparser`: 配置读取。
-
-## 5. 关键工作流
-
-### 分析工作流 (`analyze` 命令)
+#### 分析工作流 (`analyze` 命令)
 1.  **输入阶段**: 
-    *   **路径 A (语音)**: 用户提供 `--audio` 参数。系统调用 `asr_service` 进行转写，若成功则将文本作为后续输入。
-    *   **路径 B (文本)**: 用户通过 `--content` 参数或交互式粘贴输入文本。
-2.  **AI 初步分析**: `llm_service.analyze_text` 调用大模型，返回初始 JSON 数据。
-3.  **数据完整性校验 (Validation & Completion)**:
-    *   系统自动检查 `project_opportunity` 中的关键字段（预算、时间节点、采购流程等）。
-    *   **交互式补全**: 若发现缺失，CLI 提示用户输入补充信息。
-    *   **AI 清洗**: 若用户提供了补充信息，系统调用 `llm_service.refine_sales_data`，利用专用 Prompt (`refine_sales.txt`) 对输入进行格式规范化（如将“三万”转换为数字）并合并至原数据。
-4.  **交互循环 (The Interaction Loop)**:
-    *   **展示**: 系统将 JSON 解析为人类可读的 Rich 表格和树状图。
-    *   **决策**: 用户选择操作：
-        *   `s` (Save): 确认无误，执行保存。
-        *   `d` (Discard): 放弃本次结果。
-        *   `e` (Edit): 调用系统默认编辑器打开 JSON 原文。
-    *   **修正**: 用户在编辑器中修改并保存关闭后，系统重新解析 JSON 并回到“展示”步骤。
-5.  **持久化**: 
-    *   追加至 `sales_data.json`。
-    *   生成独立备份文件至 `data/records/`。
+    *   **路径 A (语音)**: `asr_service` 转写。
+    *   **路径 B (文本)**: 交互式输入。
+2.  **文本润色**: `llm_service.polish_text` 预处理。
+3.  **AI 初步分析**: `llm_service.analyze_text` 生成初始 JSON。
+4.  **数据完整性校验 (Validation & Completion)**:
+    *   系统自动扫描必填字段。
+    *   **交互式补全**: 通过“秘书”语料引导用户补充。
+5.  **交互修订循环 (Modification Loop)**:
+    *   **展示**: 展示 Rich 报表。
+    *   **决策**: 
+        *   `s` (Save): 保存。
+        *   `d` (Discard): 丢弃。
+        *   `m` (Modify): **输入自然语言指令进行修改**。
+    *   **修订**: 调用 `llm_service.update_sales_data`，刷新报表并回到展示步骤。
+6.  **持久化**: 存入主库并生成独立备份。
 
 ## 6. 开发规范 (Development Standards)
 **所有 AI 协作者必须严格遵守以下规范：**

@@ -18,7 +18,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # 导入业务服务模块
 try:
-    from src.services.llm_service import analyze_text, refine_sales_data, polish_text
+    from src.services.llm_service import analyze_text, refine_sales_data, polish_text, update_sales_data
     from src.services.asr_service import transcribe_audio
 except ImportError:
     pass
@@ -38,6 +38,48 @@ if config_path.exists():
     config.read(config_path)
 else:
     print("[bold red]错误：未找到配置文件 config/config.ini。[/bold red]")
+
+# === 加载 UI 语料库 ===
+import random
+ui_templates = {}
+ui_templates_path = Path("config/ui_templates.json")
+if ui_templates_path.exists():
+    try:
+        with open(ui_templates_path, "r", encoding="utf-8") as f:
+            ui_templates = json.load(f)
+    except Exception as e:
+        print(f"[yellow]警告：UI 语料库加载失败 ({e})，将使用默认提示。[/yellow]")
+
+def get_random_ui(key: str, **kwargs) -> str:
+    """从语料库中随机获取一条提示语，并进行格式化填充"""
+    defaults = {
+        "missing_field_prompts": "我注意到 [{field_name}] 还没填，需要补充吗？(没有请填 '无')",
+        "processing_feedback": "好的，正在处理您的补充信息...",
+        "completion_success": "数据完整性校验通过。",
+        "skip_feedback": "好的，已跳过补充。",
+        "mic_detected": "检测到录音文件：{audio_file}",
+        "polishing_start": "正在润色文本...",
+        "analysis_start": "AI 正在分析数据...",
+        "check_integrity_start": "正在检查数据完整性...",
+        "db_save_success": "保存成功，ID：{record_id}",
+        "file_save_success": "文件已备份：{file_path}",
+        "modification_ask": "请告诉我哪里需要修改？",
+        "modification_processing": "好的，正在为您修改...",
+        "modification_success": "修改完成。",
+        "operation_cancel": "操作已取消。",
+        "no_changes": "未检测到更改。",
+        "invalid_input": "无效输入。",
+        "error_json": "JSON 格式错误。",
+        "error_system": "系统错误：{error}"
+    }
+    
+    templates = ui_templates.get(key, [])
+    if isinstance(templates, list) and templates:
+        template = random.choice(templates)
+    else:
+        template = defaults.get(key, "")
+        
+    return template.format(**kwargs)
 
 def get_data_path():
     """获取数据存储文件的绝对路径"""
@@ -60,27 +102,27 @@ def display_result_human_readable(data: dict):
     以人类可读的格式（Rich 表格和树状图）展示分析结果。
     """
     # 1. 基础信息表
-    table = Table(title="[bold green]销售记录分析报告[/bold green]", show_header=False, box=None)
+    table = Table(title="[bold green]📊 销售记录分析报告[/bold green]", show_header=False, box=None)
     table.add_column("Key", style="bold cyan")
     table.add_column("Value")
 
     type_map = {"chat": "随手记/闲聊", "meeting": "正式会议"}
     record_type = type_map.get(data.get("record_type"), data.get("record_type"))
     
-    table.add_row("记录类型", record_type)
-    table.add_row("我方销售", data.get("sales_rep", "未知"))
-    table.add_row("核心摘要", data.get("summary", "暂无"))
+    table.add_row("🗣️ 记录类型", record_type)
+    table.add_row("👨‍💼 我方销售", data.get("sales_rep", "未知"))
+    table.add_row("📝 核心摘要", data.get("summary", "暂无"))
     
     # 客户情感着色
     sentiment = data.get("sentiment", "未知")
     sentiment_color = "green" if "积极" in str(sentiment) else ("red" if "消极" in str(sentiment) else "yellow")
-    table.add_row("客户态度", f"[{sentiment_color}]{sentiment}[/{sentiment_color}]")
+    table.add_row("😊 客户态度", f"[{sentiment_color}]{sentiment}[/{sentiment_color}]")
 
     console.print(table)
     console.print("")
 
     # 2. 客户信息树
-    cust_tree = Tree("[bold blue]客户画像[/bold blue]")
+    cust_tree = Tree("[bold blue]👤 客户画像[/bold blue]")
     cust_info = data.get("customer_info", {})
     if cust_info:
         cust_tree.add(f"姓名: [bold]{cust_info.get('name', 'N/A')}[/bold]")
@@ -93,7 +135,7 @@ def display_result_human_readable(data: dict):
     console.print("")
 
     # 3. 商机详情树
-    opp_tree = Tree("[bold gold1]商机概览[/bold gold1]")
+    opp_tree = Tree("[bold gold1]💰 商机概览[/bold gold1]")
     opp_info = data.get("project_opportunity", {})
     if opp_info:
         proj_name = opp_info.get("project_name", "未命名项目")
@@ -105,7 +147,7 @@ def display_result_human_readable(data: dict):
         opp_tree.add(f"流程: {opp_info.get('procurement_process', '未知')}")
         opp_tree.add(f"付款: {opp_info.get('payment_terms', '未知')}")
         
-        comp_node = opp_tree.add("竞争对手")
+        comp_node = opp_tree.add("⚔️ 竞争对手")
         competitors = opp_info.get("competitors", [])
         if competitors:
             for comp in competitors:
@@ -113,7 +155,7 @@ def display_result_human_readable(data: dict):
         else:
             comp_node.add("[dim]无明确竞争对手[/dim]")
 
-        tech_node = opp_tree.add("我方参与技术")
+        tech_node = opp_tree.add("🛠️ 我方参与技术")
         tech_stack = opp_info.get("tech_stack", [])
         if tech_stack:
             for tech in tech_stack:
@@ -137,7 +179,7 @@ def display_result_human_readable(data: dict):
     max_items = max(len(kp_list), len(action_list))
     
     kp_text = Text()
-    kp_text.append("关键点：\n", style="bold magenta")
+    kp_text.append("📌 关键点：\n", style="bold magenta")
     for idx, point in enumerate(kp_list, 1):
         kp_text.append(f"{idx}. {point}\n")
     # 填充空行以对齐高度
@@ -145,7 +187,7 @@ def display_result_human_readable(data: dict):
         kp_text.append("\n" * (max_items - len(kp_list)))
     
     action_text = Text()
-    action_text.append("待办事项：\n", style="bold red")
+    action_text.append("✅ 待办事项：\n", style="bold red")
     for idx, item in enumerate(action_list, 1):
         action_text.append(f"{idx}. {item}\n")
     # 填充空行以对齐高度
@@ -234,7 +276,8 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
     user_supplements = {}
     missing_count = 0
 
-    console.print(Panel("[bold yellow]正在为您核对记录的完整性，请稍候...[/bold yellow]", style="yellow"))
+    msg = get_random_ui("check_integrity_start")
+    console.print(Panel(f"[bold yellow]{msg}[/bold yellow]", style="yellow"))
 
     for field_key, (field_name, parent_key) in required_config.items():
         # 获取字段值
@@ -256,8 +299,9 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
 
         if is_missing:
             missing_count += 1
+            prompt_text = get_random_ui("missing_field_prompts", field_name=field_name)
             user_input = typer.prompt(
-                f"老板，我注意到 [{field_name}] 尚未填写，为了记录更完整，您看需要补充一下吗？(若暂无请回复 '无')", 
+                prompt_text, 
                 default="", 
                 show_default=False
             )
@@ -410,38 +454,46 @@ def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼
                 # 自动保存模式
                 if save:
                     record_id = save_to_db(result)
-                    console.print(f"[bold blue]成功：已保存，记录 ID：{record_id}[/bold blue]")
+                    msg = get_random_ui("db_save_success", record_id=record_id)
+                    console.print(f"[bold blue]{msg}[/bold blue]")
                     break
 
                 # 交互式菜单
                 choice = typer.prompt(
-                    "请选择操作：(s:保存 / d:丢弃 / e:编辑)", 
+                    "请选择操作：(s:保存 / d:丢弃 / m:修改)", 
                     default="s", 
                     show_default=False
                 ).lower()
 
                 if choice == 's':
                     record_id = save_to_db(result)
-                    console.print(f"[bold blue]成功：已保存，记录 ID：{record_id}[/bold blue]")
+                    msg = get_random_ui("db_save_success", record_id=record_id)
+                    console.print(f"[bold blue]{msg}[/bold blue]")
                     break
                 elif choice == 'd':
-                    console.print("[dim]操作已取消。[/dim]")
+                    msg = get_random_ui("operation_cancel")
+                    console.print(f"[dim]{msg}[/dim]")
                     break
-                elif choice == 'e':
-                    # 编辑模式
-                    console.print("[yellow]正在启动系统编辑器...[/yellow]")
-                    edited_json = typer.edit(json.dumps(result, indent=2, ensure_ascii=False), extension=".json")
+                elif choice == 'm':
+                    # 对话式修改模式
+                    msg = get_random_ui("modification_ask")
+                    user_instruction = typer.prompt(msg)
                     
-                    if edited_json:
-                        try:
-                            result = json.loads(edited_json)
-                            console.print("[green]编辑成功，正在刷新视图...[/green]")
-                        except json.JSONDecodeError:
-                            console.print("[bold red]错误：JSON 格式无效，已还原更改。[/bold red]")
+                    if user_instruction and user_instruction.strip():
+                        msg = get_random_ui("modification_processing")
+                        console.print(f"[blue]{msg}[/blue]")
+                        
+                        # 调用 AI 进行数据修订
+                        result = update_sales_data(result, user_instruction, api_key, endpoint_id)
+                        
+                        msg = get_random_ui("modification_success")
+                        console.print(f"[green]{msg}[/green]")
                     else:
-                        console.print("[dim]未检测到更改。[/dim]")
+                        msg = get_random_ui("no_changes")
+                        console.print(f"[dim]{msg}[/dim]")
                 else:
-                    console.print("[red]无效输入，请输入 s, d 或 e。[/red]")
+                    msg = get_random_ui("invalid_input")
+                    console.print(f"[red]{msg}[/red]")
 
         else:
             console.print("[red]错误：AI 服务未返回有效响应。[/red]")

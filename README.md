@@ -7,91 +7,66 @@ LinkSell 是一个专为销售团队打造的命令行工具（CLI）。它集�
 *   **🧠 智能提炼 (已就绪)**：接入豆包大模型，自动识别内容类型，深度提取客户画像、项目商机、技术栈及待办事项。
 *   **📂 本地安全存储 (已就绪)**：数据以 JSON 格式保存在本地，确保数据隐私与安全。
 *   **⚙️ 灵活配置 (已就绪)**：通过标准化的 `config.ini` 文件管理 API 密钥与系统提示词（Prompts）。
-*   **🎙️ 语音转写 (开发中)**：计划集成火山引擎 ASR，未来支持录音文件直接转文字（目前 `record` 命令仅为占位符）。
+*   **🎙️ 语音转写 (已实装)**：集成火山引擎 Seed ASR 大模型，支持录音文件及麦克风直接识别。
+*   **✨ 文本润色 (已实装)**：在分析前自动去除口语冗余，将口述内容转化为规范的书面文本。
+*   **🤖 秘书式交互 (已实装)**：内置可自定义的语料库，提供温婉、专业的“秘书”级操作反馈。
 
 ## 🚀 快速开始
 
 ### 1. 环境准备
-请确保您的环境已安装 Python 3.8 或更高版本。
-
-```bash
-# 克隆项目（假设您已完成克隆）
-cd LinkSell
-
-# 创建虚拟环境
-python3 -m venv .venv
-source .venv/bin/activate  # Windows 用户请使用 .venv\Scripts\activate
-
-# 安装依赖 (已包含 pydantic)
-pip install -r requirements.txt
-```
+# ... (same)
 
 ### 2. 配置密钥
-请将 `config/config.ini.template` 复制为 `config/config.ini`，并填入您的火山引擎 Access Key (AK)、Secret Key (SK) 及豆包大模型 API Key 和 Endpoint ID。
+# ... (same)
 
 ### 2.3 语音识别配置 (ASR)
-若需使用语音转写功能，需在火山引擎控制台开通语音技术服务（ASR）。
-本项目采用 **大模型语音识别服务 (Big Model ASR)**，需配置 Access Token 而非 AK/SK。
+本项目采用 **Seed ASR 大模型语音识别服务**。
 
 在 `config/config.ini` 中填入 AppID 及 Access Token：
 ```ini
-[volcengine]
-access_key = AK...
-secret_key = SK...
-
 [asr]
 app_id = 12345678
 access_token = YOUR_ACCESS_TOKEN_HERE
-resource_id = volc.bigasr.auc
-cluster = volcengine_input_common
+resource_id = volc.seedasr.auc
 ```
-*注意：`resource_id` 必须为 `volc.bigasr.auc`，请勿修改。**   `config/prompts/*.txt`: 存放 AI 系统提示词（Prompt）。
-*   `config/ui_templates.json`: 存放 CLI 界面交互的文本模板（如“秘书”风格的提示语），支持自定义。
+*注意：`resource_id` 建议设置为 `volc.seedasr.auc` 以获得最佳的大模型识别效果。*
+
+## 📁 核心配置文件
+*   `config/config.ini`: 存放所有 API 密钥。
+*   `config/prompts/*.txt`: 存放 AI 系统提示词（Prompt）。
+*   `config/ui_templates.json`: 存放 CLI 界面交互的随机语料库，支持自定义“秘书”话术。
 
 ## 3. 使用指南 (Usage)
 
-### 初始化
-首次运行前，请执行初始化命令以创建必要的数据文件：
-```bash
-python src/main.py init
-```
-
 ### 核心功能：销售分析 (Analyze)
-支持**文本粘贴**和**语音文件**两种输入方式。
+分析流程：**输入 (语音/文本) -> 文本润色 -> AI 结构化提炼 -> 数据补全校验 -> 对话式修订 -> 归档保存。**
 
-#### 方式一：文本分析
-直接分析文本内容，支持交互式输入或命令行参数：
+#### 方式一：语音分析 (麦克风/文件)
 ```bash
-# 交互式输入（推荐）
-python src/main.py analyze
-
-# 命令行直接输入
-python src/main.py analyze --content "今天跟张总聊了一下，他对我们的SaaS平台很感兴趣，预算大概50万..."
-```
-
-#### 方式二：语音分析 (新增)
-指定录音文件路径，系统将自动转写并进行分析：
-```bash
-python src/main.py analyze --audio "/Users/laurant/Downloads/meeting_recording.mp3"
-```
-*注：目前支持 wav, mp3 等常见音频格式，建议使用时长在 60 秒以内的短语音进行测试。*
-
-#### 方式三：麦克风直接录音 (Direct Microphone)
-直接通过麦克风录制语音，按回车键停止录音并立即开始分析：
-```bash
+# 使用麦克风直接录音（按回车结束）
 python src/main.py analyze --microphone
+
+# 指定录音文件路径
+python src/main.py analyze --audio "./data/tmp/test.wav"
 ```
-*注：需确保终端具有麦克风访问权限。*
 
-### 智能数据补全 (Smart Completion)
-系统在分析过程中会自动检测商机关键信息（如预算、时间节点、竞争对手等）是否缺失。
-若检测到缺失，系统将启动交互式补全流程，引导用户补充相关信息。用户输入的非结构化补充信息将通过 AI 再次清洗并合并至最终记录中，确保数据的完整性与规范性。
+#### 方式二：文本分析
+```bash
+python src/main.py analyze --content "今天跟王经理沟通了..."
+```
 
-### 交互式编辑
-分析完成后，系统将展示结构化报表。您可以：
-*   输入 `s`: 确认并保存。
-*   输入 `e`: 调用系统默认编辑器（如 Vim, Notepad）手动修正 AI 提取的结果。
-*   输入 `d`: 丢弃本次结果。
+### 对话式修订 (Interactive Modification)
+分析完成后，系统将展示精美的结构化报表。若发现内容有误，您不再需要手动编辑复杂的 JSON：
+1.  输入 `m`: 进入修改模式。
+2.  直接输入自然语言指令，例如：
+    *   “把预算改成 100 万”
+    *   “客户姓名记错了，是李四”
+    *   “增加一个竞争对手：赛立信”
+3.  系统将通过 AI 自动理解并更新报表。
+
+### 其他操作
+*   输入 `s`: 确认并保存记录至本地。
+*   输入 `d`: 丢弃本次分析结果。
 
 ## 📁 目录结构说明
 ```text
