@@ -22,8 +22,8 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
 *   **`src/services/llm_service.py` (AI 服务层)**
     *   **职责**: 对接火山引擎 Ark Runtime。
     *   **逻辑**: 
-        *   从 `config/prompts/` 加载 System Prompt。
-        *   调用 LLM 并处理 `temperature` 等参数。
+        *   `analyze_text`: 调用 LLM 分析原始文本，生成初始 JSON。
+        *   `refine_sales_data`: 接收用户补充的碎片化信息，结合原始数据进行校验、格式化（如统一金额单位）与合并。
         *   **清洗逻辑**: 自动剥离 LLM 返回可能包含的 Markdown 标记 (```json)，确保返回纯净的字典对象。
 *   **`src/services/asr_service.py` (语音服务层)**
     *   **职责**: 对接火山引擎语音识别 (ASR) 服务。
@@ -34,7 +34,29 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
 *   **`src/services/__init__.py`**
     *   **职责**: 暴露服务层接口，简化导入路径 (目前为空，作为包标识)。
 
-(中间内容保持不变...)
+### 2.2 配置文件
+*   **`config/config.ini`**: 包含 API 密钥（Doubao, Volcengine, ASR）、Endpoint ID 和文件路径。**严禁提交至 Git**。
+*   **`config/prompts/`**: 存储 System Prompts。
+    *   `analyze_sales.txt`: 用于初始分析，定义了严格的 JSON 输出格式（含商机、客户画像、竞争对手等字段）。
+    *   `refine_sales.txt`: 用于数据校验，处理用户补录的碎片化信息。
+
+## 3. 数据结构 (Data Schema)
+AI 分析后的数据结构（JSON）包含以下关键字段：
+*   `record_type`: 记录类型 (meeting/chat)。
+*   `sales_rep`: 我方销售负责人/记录人姓名。
+*   `customer_info`: 客户画像 (姓名, 公司, 职位, 联系方式)。
+*   `project_opportunity`: 商机详情 (项目名, 预算, 阶段, 技术栈, **时间节点**, **采购流程**, **付款方式**, **竞争对手**)。
+*   `key_points`: 核心要点列表。
+*   `action_items`: 待办事项/下一步计划。
+*   `sentiment`: 客户情感分析。
+
+## 4. 依赖管理
+*   `requirements.txt`: 
+    *   `typer`: 命令行界面。
+    *   `rich`: 终端美化。
+    *   `volcengine-python-sdk[ark]`: 火山引擎 SDK (含 Ark Runtime 扩展)。
+    *   `requests`: HTTP 请求。
+    *   `configparser`: 配置读取。
 
 ## 5. 关键工作流
 
@@ -42,15 +64,19 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
 1.  **输入阶段**: 
     *   **路径 A (语音)**: 用户提供 `--audio` 参数。系统调用 `asr_service` 进行转写，若成功则将文本作为后续输入。
     *   **路径 B (文本)**: 用户通过 `--content` 参数或交互式粘贴输入文本。
-2.  **AI 处理**: `llm_service` 调用大模型，返回 JSON 数据。
-3.  **交互循环 (The Interaction Loop)**:
+2.  **AI 初步分析**: `llm_service.analyze_text` 调用大模型，返回初始 JSON 数据。
+3.  **数据完整性校验 (Validation & Completion)**:
+    *   系统自动检查 `project_opportunity` 中的关键字段（预算、时间节点、采购流程等）。
+    *   **交互式补全**: 若发现缺失，CLI 提示用户输入补充信息。
+    *   **AI 清洗**: 若用户提供了补充信息，系统调用 `llm_service.refine_sales_data`，利用专用 Prompt (`refine_sales.txt`) 对输入进行格式规范化（如将“三万”转换为数字）并合并至原数据。
+4.  **交互循环 (The Interaction Loop)**:
     *   **展示**: 系统将 JSON 解析为人类可读的 Rich 表格和树状图。
     *   **决策**: 用户选择操作：
         *   `s` (Save): 确认无误，执行保存。
         *   `d` (Discard): 放弃本次结果。
         *   `e` (Edit): 调用系统默认编辑器打开 JSON 原文。
     *   **修正**: 用户在编辑器中修改并保存关闭后，系统重新解析 JSON 并回到“展示”步骤。
-4.  **持久化**: 
+5.  **持久化**: 
     *   追加至 `sales_data.json`。
     *   生成独立备份文件至 `data/records/`。
 

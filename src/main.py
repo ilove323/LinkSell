@@ -63,6 +63,7 @@ def display_result_human_readable(data: dict):
     record_type = type_map.get(data.get("record_type"), data.get("record_type"))
     
     table.add_row("记录类型", record_type)
+    table.add_row("👨‍💼 我方销售", data.get("sales_rep", "未知"))
     table.add_row("📝 核心摘要", data.get("summary", "暂无"))
     
     # 客户情感着色
@@ -119,22 +120,34 @@ def display_result_human_readable(data: dict):
     console.print(opp_tree)
     console.print("")
 
-    # 4. 关键点与待办
-    grid = Table.grid(expand=True)
+    # 4. 关键点与待办事项 (对齐高度)
+    grid = Table.grid(expand=True, padding=1)
     grid.add_column()
     grid.add_column()
+    
+    kp_list = data.get("key_points", [])
+    action_list = data.get("action_items", [])
+    
+    # 计算两者中最大项数，以确保 Panel 边框高度对齐
+    max_items = max(len(kp_list), len(action_list))
     
     kp_text = Text()
     kp_text.append("📌 关键点：\n", style="bold magenta")
-    for idx, point in enumerate(data.get("key_points", []), 1):
+    for idx, point in enumerate(kp_list, 1):
         kp_text.append(f"{idx}. {point}\n")
+    # 填充空行以对齐高度
+    if len(kp_list) < max_items:
+        kp_text.append("\n" * (max_items - len(kp_list)))
     
     action_text = Text()
     action_text.append("✅ 待办事项：\n", style="bold red")
-    for idx, item in enumerate(data.get("action_items", []), 1):
+    for idx, item in enumerate(action_list, 1):
         action_text.append(f"{idx}. {item}\n")
+    # 填充空行以对齐高度
+    if len(action_list) < max_items:
+        action_text.append("\n" * (max_items - len(action_list)))
 
-    grid.add_row(Panel(kp_text), Panel(action_text))
+    grid.add_row(Panel(kp_text, expand=True), Panel(action_text, expand=True))
     console.print(grid)
 
 def save_to_db(record: dict):
@@ -198,28 +211,35 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
     检查关键字段是否缺失，并交互式引导用户补充。
     如果用户补充了信息，则调用 LLM 进行清洗和合并。
     """
-    opp = data.get("project_opportunity", {})
-    if not opp:
+    if "project_opportunity" not in data:
         data["project_opportunity"] = {}
-        opp = data["project_opportunity"]
 
-    # 定义必填字段及其中文名称
-    required_fields = {
-        "timeline": "⏱️ 时间节点",
-        "budget": "💰 预算金额",
-        "procurement_process": "📝 采购流程",
-        "competitors": "⚔️ 竞争对手",
-        "tech_stack": "🛠️ 我方参与技术",
-        "payment_terms": "💳 付款方式"
+    # 定义必填字段配置：key -> (display_name, parent_key)
+    # parent_key 为 None 表示根节点，否则为 data[parent_key]
+    required_config = {
+        "sales_rep": ("👨‍💼 我方销售", None),
+        "timeline": ("⏱️ 时间节点", "project_opportunity"),
+        "budget": ("💰 预算金额", "project_opportunity"),
+        "procurement_process": ("📝 采购流程", "project_opportunity"),
+        "competitors": ("⚔️ 竞争对手", "project_opportunity"),
+        "tech_stack": ("🛠️ 我方参与技术", "project_opportunity"),
+        "payment_terms": ("💳 付款方式", "project_opportunity")
     }
 
     user_supplements = {}
     missing_count = 0
 
-    console.print(Panel("[bold yellow]老大哥正在检查数据完整性...[/bold yellow]", style="yellow"))
+    console.print(Panel("[bold yellow]正在检查数据完整性...[/bold yellow]", style="yellow"))
 
-    for field_key, field_name in required_fields.items():
-        val = opp.get(field_key)
+    for field_key, (field_name, parent_key) in required_config.items():
+        # 获取字段值
+        if parent_key:
+            target_dict = data.get(parent_key, {})
+        else:
+            target_dict = data
+        
+        val = target_dict.get(field_key)
+
         # 判断是否为空：None, 空字符串, 空列表, 或包含 "未知/未指定"
         is_missing = False
         if val is None:
@@ -232,7 +252,7 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
         if is_missing:
             missing_count += 1
             user_input = typer.prompt(
-                f"老大哥发现 [{field_name}] 没填，赶紧补上 (输入 '无' 跳过)", 
+                f"检测到必要字段 [{field_name}] 缺失，请输入补充信息 (输入 '无' 跳过)", 
                 default="", 
                 show_default=False
             )
@@ -241,15 +261,15 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
                 user_supplements[field_key] = user_input
 
     if user_supplements:
-        console.print("[blue]收到补充信息，正在让 AI 进行格式化和校验...[/blue]")
+        console.print("[blue]接收到补充信息，正在调用 AI 进行格式化与校验...[/blue]")
         # 调用 LLM 进行清洗和校验
         refined_data = refine_sales_data(data, user_supplements, api_key, endpoint_id)
         return refined_data
     
     if missing_count == 0:
-        console.print("[green]完美！所有关键信息都齐了！[/green]")
+        console.print("[green]数据完整性校验通过。[/green]")
     else:
-        console.print("[dim]部分信息已跳过补充。[/dim]")
+        console.print("[dim]部分非必要信息已跳过补充。[/dim]")
 
     return data
 
