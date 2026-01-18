@@ -288,14 +288,23 @@ def handle_list_logic(content):
     """处理 LIST 意图"""
     # 提取过滤条件
     search_term = controller.extract_search_term(content)
-    console.print(f"[dim]正在列出符合 '{search_term}' 的商机...[/dim]")
     
-    def simple_filter(data):
-        if not search_term: return True
-        dump_str = json.dumps(data, ensure_ascii=False)
-        return search_term in dump_str
+    # --- 核心修复：处理泛指逻辑 ---
+    is_full_list = False
+    if search_term.upper() == "ALL" or not search_term or search_term == "Unknown":
+        is_full_list = True
+    elif search_term in ["商机", "项目", "单子", "列表"]: # 兜底过滤通用词
+        is_full_list = True
         
-    results = controller.list_opportunities(simple_filter)
+    if is_full_list:
+        console.print("[dim]正在展示所有商机清单...[/dim]")
+        results = controller.list_opportunities() # 不传 filter 就是全量
+    else:
+        console.print(f"[dim]正在列出符合 '{search_term}' 的商机...[/dim]")
+        def simple_filter(data):
+            dump_str = json.dumps(data, ensure_ascii=False)
+            return search_term.lower() in dump_str.lower()
+        results = controller.list_opportunities(simple_filter)
     
     if results:
         table = Table(title=f"搜索结果 ({len(results)}条)", show_header=True, header_style="bold magenta")
