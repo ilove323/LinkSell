@@ -23,3 +23,8 @@ cluster = volcengine_input_common
 [storage]
 # 销售数据存储路径
 data_file = data/sales_data.json
+
+[global]
+# Hugging Face 镜像站地址 (解决国内无法下载本地 Embedding 模型的问题)
+# 如果你能科学上网，可以留空；否则建议使用 https://hf-mirror.com
+hf_endpoint = https://hf-mirror.com

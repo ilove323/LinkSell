@@ -151,6 +151,54 @@ def judge_affirmative(user_input: str, api_key: str, endpoint_id: str) -> bool:
     except:
         return False
 
+def classify_intent(text: str, api_key: str, endpoint_id: str) -> str:
+    """
+    判断用户的意图：ANALYZE, QUERY, 或 OTHER。
+    """
+    client = Ark(api_key=api_key)
+    system_prompt = load_prompt("classify_intent")
+    
+    try:
+        completion = client.chat.completions.create(
+            model=endpoint_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ],
+            temperature=0.1, 
+        )
+        content = completion.choices[0].message.content.strip().upper()
+        if "ANALYZE" in content: return "ANALYZE"
+        if "QUERY" in content: return "QUERY"
+        return "OTHER"
+    except:
+        return "ANALYZE" # 默认走分析逻辑
+
+def query_sales_data(query: str, history_data: list, api_key: str, endpoint_id: str) -> str:
+    """
+    根据历史数据回答用户的查询。
+    """
+    client = Ark(api_key=api_key)
+    system_prompt_template = load_prompt("query_sales")
+    
+    # 将 JSON 历史数据截断或处理，防止 Token 溢出（暂时简单处理）
+    context = json.dumps(history_data[-10:], ensure_ascii=False, indent=2) # 取最近10条
+    
+    system_prompt = system_prompt_template.replace("{{context}}", context).replace("{{query}}", query)
+
+    try:
+        completion = client.chat.completions.create(
+            model=endpoint_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ],
+            temperature=0.3,
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as e:
+        return f"查询出错啦：{e}"
+
 def is_sales_content(text: str, api_key: str, endpoint_id: str) -> bool:
     """
     判断输入内容是否为销售对话或业务相关记录。

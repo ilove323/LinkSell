@@ -16,7 +16,7 @@ from src.core.controller import LinkSellController
 st.set_page_config(page_title="LinkSell 智能销售助手", page_icon="💼", layout="wide")
 
 # --- Header ---
-logo_path = Path("assents/icon/comlan.png")
+logo_path = Path("assets/icon/comlan.png")
 col_logo, col_title = st.columns([1, 6])
 with col_logo:
     if logo_path.exists(): st.image(str(logo_path), width=120)
@@ -67,7 +67,7 @@ if "controller" not in st.session_state:
         st.stop()
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "你好！我是您的销售助手。请上传录音文件或直接粘贴对话文本，我来帮您整理。"}]
+    st.session_state.messages = [{"role": "assistant", "content": "有什么需要帮忙的么"}]
 
 if "sales_data" not in st.session_state:
     st.session_state.sales_data = None
@@ -203,21 +203,36 @@ def add_report_message(data):
     st.session_state.messages.append({"role": "assistant", "type": "report", "data": snapshot})
 
 def reset_state():
-    """Resets the app to initial state."""
+    """只重置业务逻辑状态，保留聊天历史。"""
     st.session_state.sales_data = None
     st.session_state.step = "input"
     st.session_state.missing_fields_queue = []
     st.session_state["chat_input_area"] = ""
-    st.session_state.messages = [{"role": "assistant", "content": "你好！我是您的销售助手。请上传录音文件或直接粘贴对话文本，我来帮您整理。"}]
+    
+    # 重新说第一句话，但作为追加，而不是重置
+    greeting = "有什么需要帮忙的么"
+    add_ai_message(f"✅ 记录已存档！\n\n{greeting}")
     st.rerun()
 
 def handle_logic(prompt):
     """Unified logic handler for user input."""
     if not prompt: return
+    
     if st.session_state.step == "input":
-        if not st.session_state.controller.check_is_sales(prompt):
-            add_ai_message("我只是一个销售助手, 不理解您的问题, 请上传录音文件或直接粘贴对话文本，我来帮您整理。")
+        # 1. 识别意图
+        intent = st.session_state.controller.get_intent(prompt)
+        
+        if intent == "QUERY":
+            with st.spinner("正在查账..."):
+                answer = st.session_state.controller.handle_query(prompt)
+                add_ai_message(answer)
+                return
+        
+        if intent == "OTHER":
+            add_ai_message("抱歉哈，这事儿超出了我的业务范围。我是专门帮您整理销售记录的，或者是查查旧账，有什么这方面我能帮您的么？")
             return
+            
+        # 2. 如果是 ANALYZE，走原有逻辑
         with st.spinner("分析中..."):
             polished = st.session_state.controller.polish(prompt)
             data = st.session_state.controller.analyze(polished)
@@ -259,14 +274,6 @@ if "submit_trigger" in st.session_state:
     add_user_message(p)
     handle_logic(p)
 
-# --- Header ---
-logo_path = Path("assents/icon/comlan.png")
-col_logo, col_title = st.columns([1, 6])
-with col_logo:
-    if logo_path.exists(): st.image(str(logo_path), width=120)
-with col_title:
-    st.title("LinkSell 智能销售助手")
-
 # --- Chat History ---
 display_chat()
 
@@ -305,24 +312,41 @@ components.html("""
 <script>
 const doc = window.parent.document;
 function setupInput() {
-    const textarea = doc.querySelector('textarea');
+    // 1. 寻找那个 placeholder 匹配的 textarea
+    const textareas = Array.from(doc.querySelectorAll('textarea'));
+    const textarea = textareas.find(t => t.placeholder && t.placeholder.includes("输入或修改"));
+
+    // 2. 寻找那个带着大火箭的发送按钮
     const buttons = Array.from(doc.querySelectorAll('button'));
-    const send_btn = buttons.find(b => b.innerText.includes("🚀"));
+    const send_btn = buttons.find(b => b.innerText.includes("🚀") || b.textContent.includes("🚀"));
 
     if (textarea && send_btn && !textarea.dataset.hookAttached) {
         textarea.addEventListener('keydown', function(e) {
             if (e.key === 'Enter') {
-                if (e.ctrlKey || e.metaKey || e.shiftKey) {
-                    // Do nothing, let the browser insert a newline
-                } else {
-                    // Prevent newline and click send
-                    e.preventDefault();
-                    send_btn.click();
+                // 如果按了 Shift/Ctrl/Alt，那是真想换行，咱不管
+                if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                    return;
                 }
+                
+                // 否则，这就是要发送！
+                e.preventDefault();
+                e.stopPropagation();
+
+                // 核心骚操作：先失去焦点，强制同步数据到 Streamlit 后台
+                textarea.blur();
+                
+                // 稍微等几毫秒，让数据飞一会儿，再点发送
+                setTimeout(() => {
+                    send_btn.click();
+                    // 点完再把焦点拉回来，方便下次输入
+                    setTimeout(() => textarea.focus(), 100);
+                }, 50);
             }
         });
         textarea.dataset.hookAttached = "true";
+        console.log("老大哥的 Enter 钩子已经挂好了！");
     }
 }
-setInterval(setupInput, 1000);
+// 提高侦察频率，每 500ms 检查一次
+setInterval(setupInput, 500);
 </script>""", height=0)

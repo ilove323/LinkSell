@@ -135,12 +135,21 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
 
     if not content: content = typer.prompt("请输入内容")
 
-    # 新增：意图防火墙
-    with console.status("[bold yellow]正在核实内容意图...", spinner="dots"):
-        if not controller.check_is_sales(content):
-            console.print("[bold red]提示：[/bold red]我只是一个销售助手, 不理解您的问题, 请上传录音文件或直接粘贴对话文本，我来帮您整理。")
+    # 新增：意图分流
+    with console.status("[bold yellow]正在识别您的需求...", spinner="dots"):
+        intent = controller.get_intent(content)
+        
+    if intent == "QUERY":
+        with console.status("[bold cyan]正在翻阅历史记录...", spinner="search"):
+            answer = controller.handle_query(content)
+            console.print(Panel(answer, title="[bold green]查询结果[/bold green]", border_style="green"))
             return
+            
+    if intent == "OTHER":
+        console.print("[yellow]提示：[/yellow]我只是一个销售助手，您可以让我帮您分析录音，或者查询历史数据。有什么这方面我能帮您的么？")
+        return
 
+    # ANALYZE 逻辑继续
     console.print(Panel(f"[bold cyan]{get_random_ui('polishing_start')}[/bold cyan]", style="cyan"))
     content = controller.polish(content)
     console.print(Panel(content, title="[bold green]整理后的文本[/bold green]"))
@@ -155,6 +164,10 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
     neg_kw = ["否", "不", "no", "n", "没", "不需要", "不用", "取消", "别"]
 
     while True:
+        # 翻篇儿！清屏，让标题和结果永远在最上方
+        console.clear()
+        console.print(Panel("[bold green]LinkSell 智能销售助手 - CLI 模式[/bold green]", style="bold green", expand=False))
+        
         display_result_human_readable(result)
         if save:
             rid, _ = controller.save(result)
