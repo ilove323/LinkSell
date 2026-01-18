@@ -101,7 +101,47 @@ if "missing_fields_queue" not in st.session_state:
 if "chat_input_area" not in st.session_state:
     st.session_state["chat_input_area"] = ""
 
-# --- Helper Functions ---
+# --- Helper Functions (Definitions) ---
+
+def handle_voice_and_files():
+    # Mic handling
+    if "mic_input" in st.session_state and st.session_state.mic_input:
+        audio = st.session_state.mic_input
+        aid = hash(audio.getvalue())
+        if st.session_state.get("last_audio") != aid:
+            tmp = Path(f"data/tmp/mic_{int(time.time())}.wav"); tmp.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "wb") as _f: _f.write(audio.getbuffer())
+            
+            with st.spinner("🎙️ 正在将语音转换为文字..."):
+                try:
+                    text = st.session_state.controller.transcribe(tmp)
+                    if text: 
+                        st.session_state["chat_input_area"] = text
+                        st.session_state["last_audio"] = aid
+                        st.rerun() # 立即重绘，确保输入框更新
+                    else:
+                        st.toast("⚠️ 未识别到有效语音，请大声一点重试", icon="🙉")
+                        st.session_state["last_audio"] = aid 
+                except Exception as e:
+                    error_msg = str(e)
+                    if "Configuration Invalid" in error_msg:
+                        st.toast("❌ ASR 配置无效！请检查 config.ini", icon="🚫")
+                    else:
+                        st.toast(f"❌ 语音识别出错: {error_msg}", icon="💥")
+                    st.session_state["last_audio"] = aid
+
+    # File handle
+    if st.session_state.get("transcribing") and st.session_state.get("transcribe_path"):
+        tp = st.session_state.pop("transcribe_path"); st.session_state.pop("transcribing")
+        try:
+            text = st.session_state.controller.transcribe(tp)
+            if text: st.session_state["chat_input_area"] = text; st.rerun()
+        except: pass
+
+# 执行语音/文件处理 (必须在 UI 渲染前，且在函数定义后)
+handle_voice_and_files()
+
+# --- Other Helpers ---
 
 def render_report(data):
     if not data: return
@@ -168,6 +208,26 @@ def render_report(data):
             if act:
                 for idx, a in enumerate(act, 1): st.markdown(f"{idx}. {a}")
             else: st.caption("无")
+            
+        # --- 新增：跟进记录展示区域 ---
+        st.divider()
+        st.markdown("#### 📜 跟进记录 (Follow-up Records)")
+        record_logs = data.get("record_logs", [])
+        if record_logs:
+            # 倒序显示，最近的在上面
+            for log in sorted(record_logs, key=lambda x: x.get("time", ""), reverse=True):
+                with st.chat_message("user", avatar="📝"):
+                    st.caption(f"{log.get('time', '未知时间')} - {log.get('recorder', '未知')}")
+                    st.markdown(log.get("content", "无内容"))
+        else:
+            # 如果没有 logs (比如新录入)，显示本次摘要
+            curr_summary = data.get("summary")
+            if curr_summary:
+                with st.chat_message("user", avatar="🆕"):
+                    st.caption("本次记录")
+                    st.markdown(curr_summary)
+            else:
+                st.caption("暂无跟进记录")
 
 def display_chat():
     for msg in st.session_state.messages:
@@ -199,6 +259,27 @@ def handle_logic(prompt):
     if st.session_state.step == "input":
         intent = st.session_state.controller.identify_intent(prompt)
         if intent == "QUERY":
+            # --- 增强：详情直通车 (GUI版) ---
+            detail_keywords = ["详情", "详细", "档案", "全貌", "资料"]
+            if any(kw in prompt for kw in detail_keywords) and st.session_state.controller.vector_service:
+                # 简单提取关键字（为了省事直接用全句搜，效果一般也够用）
+                query_name = prompt
+                for kw in detail_keywords: query_name = query_name.replace(kw, "")
+                query_name = query_name.replace("查看", "").replace("看看", "").replace("的", "").strip()
+                
+                if query_name:
+                    with st.spinner("正在定位商机..."):
+                        # 复用 controller 的 search_opportunities 
+                        # (注意: 这里其实可以用 find_potential_matches 更加严谨，但 GUI 交互比较简单，先用 search_projects)
+                        matches = st.session_state.controller.vector_service.search_projects(query_name, top_k=1)
+                        if matches:
+                             target_opp = st.session_state.controller.get_opportunity_by_id(matches[0]["id"])
+                             if target_opp:
+                                 add_ai_message(f"已为您找到相关项目：**{target_opp.get('project_opportunity', {}).get('project_name')}**")
+                                 add_report_message(target_opp)
+                                 return
+            
+            # 普通查询 Fallback
             with st.spinner(get_ui_text("processing_query", "正在检索...")):
                 answer = st.session_state.controller.handle_query(prompt)
                 if answer == "__EMPTY_DB__": add_ai_message(get_ui_text("empty_db_hint"))
@@ -219,8 +300,8 @@ def handle_logic(prompt):
             return
 
     elif st.session_state.step == "ask_create_opportunity":
-        from src.services.llm_service import judge_affirmative
-        if judge_affirmative(prompt, st.session_state.controller.api_key, st.session_state.controller.endpoint_id):
+        # 使用 Controller 的统一判断逻辑 (含本地快筛 + LLM)
+        if st.session_state.controller.judge_user_affirmative(prompt):
             st.session_state.step = "search_project"
             add_ai_message(get_ui_text("ask_search_project"))
         else:
@@ -340,26 +421,6 @@ with st.container():
     with c_send:
         st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
         st.button("🚀", type="primary", use_container_width=True, key="final_send_btn")
-
-# Mic handling
-if "mic_input" in st.session_state and st.session_state.mic_input:
-    audio = st.session_state.mic_input
-    aid = hash(audio.getvalue())
-    if st.session_state.get("last_audio") != aid:
-        tmp = Path(f"data/tmp/mic_{int(time.time())}.wav"); tmp.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "wb") as _f: _f.write(audio.getbuffer())
-        try:
-            text = st.session_state.controller.transcribe(tmp)
-            if text: st.session_state["chat_input_area"] = text; st.session_state["last_audio"] = aid; st.rerun()
-        except: pass
-
-# File handle
-if st.session_state.get("transcribing") and st.session_state.get("transcribe_path"):
-    tp = st.session_state.pop("transcribe_path"); st.session_state.pop("transcribing")
-    try:
-        text = st.session_state.controller.transcribe(tp)
-        if text: st.session_state["chat_input_area"] = text; st.rerun()
-    except: pass
 
 components.html("""
 <script>

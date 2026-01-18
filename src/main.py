@@ -27,14 +27,15 @@ def init():
     """初始化项目环境，检查配置文件及数据目录结构"""
     from src.cli.interface import console
     console.print("[green]正在初始化 LinkSell 系统...[/green]")
-    data_file = Path(controller.config.get("storage", "data_file", fallback="data/sales_data.json"))
-    data_file.parent.mkdir(parents=True, exist_ok=True)
-    if not data_file.exists():
-        import json
-        with open(data_file, "w", encoding="utf-8") as f:
-            json.dump([], f)
-    (data_file.parent / "records").mkdir(parents=True, exist_ok=True)
-    console.print("[bold green]初始化完成。[/bold green]")
+    
+    # 改为创建商机文件夹
+    opp_dir = Path("data/opportunities")
+    opp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 记录备份文件夹
+    (Path("data") / "records").mkdir(parents=True, exist_ok=True)
+    
+    console.print("[bold green]初始化完成。数据目录：data/opportunities/[/bold green]")
 
 @app.command()
 def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼的对话文本"),

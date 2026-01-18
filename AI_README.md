@@ -1,74 +1,71 @@
-# LinkSell AI 上下文文档 (LLM Context)
+# 🤖 LinkSell AI 上下文文档 (LLM Context Only)
 
-> **注意**：本文档是 AI 协作开发的核心依据，描述了系统的 MVC 架构、业务逻辑映射及开发规范。
+> **CRITICAL**: THIS DOCUMENT IS FOR ARTIFICIAL INTELLIGENCE AGENTS (LLMs) ONLY. 
+> 如果你是人类开发者，请阅读 `README.md`。
 
-## 1. 系统架构 (Architecture)
+本文档详细描述了 LinkSell v2.4 的内部逻辑、状态机模型及开发约束，旨在帮助后续 AI 协作专家快速理解系统深层逻辑。
 
-LinkSell 2.0 采用严格的 **MVC (Model-View-Controller)** 分层架构，确保业务逻辑与展示界面彻底分离。
+---
 
-### 1.1 核心层 (Controller)
-*   **文件**: `src/core/controller.py`
-*   **类**: `LinkSellController`
-*   **职责**: 系统的“唯一大脑”。所有业务逻辑、API 调用、文件读写、配置加载**必须**在此完成。
-*   **核心方法**:
-    *   `get_intent(text)`: 识别用户意图：`ANALYZE` (录入), `QUERY` (查询), `OTHER` (闲聊)。
-    *   `handle_query(query_text)`: 语义搜索 RAG 流程。先从向量库检索上下文，再调 LLM 生成专业回答。
-    *   `search_opportunities(keyword)`: 按关键字模糊匹配已有商机名，防止重复建档。
-    *   `save(record, raw_content)`: **(核心重构)** 以 `project_name` 为主键聚合存储。自动追加 `record_logs` 数组（含时间、记录者、精修或摘要内容）。
-    *   `transcribe(audio_path)`: 调用 ASR 服务，支持异步轮询及静音检测。
-    *   `get_missing_fields(data)`: 业务规则校验。强制检查 `opportunity_stage` (1-4) 及 `technical_staff` (我方技术人员) 等字段。
-    *   `summarize_text(content)`: 对超过 500 字的小记自动进行 AI 提炼。
+## 1. 核心状态机 (The Core Dispatcher)
 
-### 1.2 视图层 (View) - GUI (Web)
-*   **文件**: `src/gui/app.py`
-*   **框架**: Streamlit
-*   **职责**: 负责 Web 端的界面渲染和用户事件捕获。**严禁**直接包含 API 调用或复杂的业务判断。
-*   **交互规范**: 必须使用 `get_ui_text()` 从 `ui_templates.json` 获取语料。所有保存动作需经过“转商机”与“项目匹配”两次确认。
+`src/cli/interface.py` 中的 `run_analyze` 是系统的核心调度器。它不直接处理业务，而是执行 **Intent-Based Routing**:
 
-### 1.3 视图层 (View) - CLI (Terminal)
-*   **目录**: `src/cli/`
-*   **文件**: `src/cli/interface.py`
-*   **框架**: Typer + Rich
-*   **职责**: 负责终端环境下的交互实现。支持 `console.clear()` 驱动的沉浸式循环界面。
+1.  **Intent Identification**: 调用 `controller.identify_intent`。
+2.  **Dispatching**:
+    - `CREATE`: 路由至 `handle_create_logic`。包含润色、分析、缺失字段补全、冲突检测、保存。
+    - `LIST`: 路由至 `handle_list_logic`。提取关键词并执行本地检索。
+    - `GET/UPDATE/DELETE`: 调用 `_resolve_target_strictly` 锁定目标，然后执行相应操作。
+3.  **OTHER**: 从 `ui_templates.json` 抽取回复，拒绝非业务请求。
 
-### 1.4 路由分流器 (Entry Point)
-*   **文件**: `src/main.py`
-*   **职责**: 程序的统一入口。在启动前根据 `config.ini` 全局配置设置 `HF_ENDPOINT` (镜像站) 及 `default_recorder` 环境变量。
+---
 
-### 1.5 服务层 (Services)
-*   **目录**: `src/services/`
-*   **职责**: 无状态底层 API 封装。
-    *   **VectorService**: 本地 Embedding 引擎。使用 `Sentence-Transformer` 实现语义向量化，由 `ChromaDB` 负责持久化。
-    *   **LLM Service**: 封装豆包 API。包含 `classify_intent` (意图分类)、`query_sales_data` (RAG查询)、`summarize_text` (长文摘要)。
-    *   **ASR Service**: 采用“提交任务 -> 定时轮询”模式，支持静音检测 (Status 20000003)。
+## 2. 目标解析闭环 (The Resolve Loop)
 
-## 2. 核心工作流 (Workflow)
+`_resolve_target_strictly(raw_input)` 是确保数据一致性的核心机制。其递归逻辑如下：
+1.  **提取关键词**: 通过 `extract_search_term` 规范化搜索。
+2.  **双轨搜索**: 调用 `find_potential_matches`（关键词模糊匹配 + 语义向量匹配）。
+3.  **结果收敛**:
+    - **0 结果**: 引导用户重新输入关键词或退出。
+    - **1 结果**: 锁定目标并返回。
+    - **N 结果**: 展示列表，要求输入 **[序号]**。若用户输入了 **[文字]**，则视为新的关键词搜索，重新开始循环。
 
-### 2.1 录入与归档闭环 (CRM Workflow)
-1.  **输入与意图识别**: 识别为 `ANALYZE` 意图。
-2.  **提炼小记**: 执行 `polish` -> `analyze` 生成初稿。
-3.  **商机判定**: 询问用户是否转为“商机”。
-4.  **关联搜索**: 如果转商机，通过 `search_opportunities` 搜索已存在项目。
-5.  **匹配与补全**: 锁定唯一项目名或新建，随后补全缺失字段（如商机阶段 1-4, 技术人员）。
-6.  **聚合存档**: 执行 `save`。系统自动对长文本做 `summarize`，并双写至 JSON 与向量库。
+---
 
-### 2.2 语义查询 (Query Loop)
-1.  **输入与意图识别**: 识别为 `QUERY` 意图。
-2.  **语义检索**: `VectorService` 在本地库检索最相关的 Top-5 历史记录。
-3.  **生成回答**: LLM 结合历史记录上下文回答用户问题。
+## 3. 提示词与功能映射表 (Prompts Mapping)
 
-## 3. 业务规则规范
+| 文件名 | 调用方法 (Controller) | 业务逻辑 |
+| :--- | :--- | :--- |
+| `classify_intent.txt` | `identify_intent` | 五大意图分流 (CREATE/LIST/GET/UPDATE/DELETE/OTHER) |
+| `extract_search_term.txt` | `extract_search_term` | 从指令中提取项目名实体 |
+| `normalize_input.txt` | `normalize_input` | 填空题规范化 (处理 NULL、格式化金额/日期) |
+| `judge_save.txt` | `judge_user_affirmative` | 全局布尔逻辑判决 |
+| `analyze_sales.txt` | `analyze` | 销售对话结构化提取 |
+| `update_sales.txt` | `update` | 自然语言驱动的 JSON 局部更新 |
+| `polish_text.txt` | `polish` | 录音转写文本去燥润色 |
 
-### 3.1 数字化商机阶段
-*   **规范**: 存储时 `opportunity_stage` 必须为数字 (1, 2, 3, 4)。
-*   **映射**: 1:需求确认, 2:沟通交流, 3:商务谈判, 4:签订合同。映射关系在 `config.ini` 中定义。
+---
 
-### 3.2 记录志 (Record Logs)
-*   **结构**: 包含 `time` (格式化时间), `recorder` (默认记录者), `content` (精修或摘要文本)。
-*   **摘要阈值**: 500 字。超过此长度的原始记录必须提炼摘要。
+## 4. 开发红线 (Hard Rules for AI)
 
-## 4. 开发禁忌 (Dont's)
-1.  **禁止** 在视图层 (`src/gui/` 或 `src/cli/`) 直接导入 `requests` 或 `volcengine` SDK。
-2.  **禁止** 在业务逻辑中使用 UI 相关的 print 或 st.write（应通过返回值由 UI 层处理）。
-3.  **禁止** 破坏 `LinkSellController` 作为唯一逻辑入口的原则。
-4.  **禁止** 破坏 `project_name` 作为商机唯一聚合主键的原则。
+### 4.1 状态管理 (State Integrity)
+- **Metadata Inheritance**: 在 `controller.update` 中，必须手动将 `original_data` 的元数据（`id`, `_file_path`, `_temp_id`, `created_at`, `record_logs`）拷贝至 LLM 返回的新对象中。**严禁丢失系统级字段。**
+- **Atomic Operations**: `overwrite_opportunity` 必须确保文件变更与向量库更新同步。
+
+### 4.2 交互规范
+- **Randomized UI**: 严禁在 `interface.py` 或 `app.py` 中硬编码字符串。必须使用 `get_random_ui(key)` 从 `config/ui_templates.json` 获取语料。
+- **Strict Normalization**: 所有 `typer.prompt` 的返回值，若涉及字段填空，必须经过 `controller.normalize_input` 过滤。
+
+### 4.3 存储逻辑
+- **File-per-Opp**: 严禁将所有商机存入同一个文件。数据必须以 `{project_name}.json` 形式分布存储。
+- **Conflict Management**: `detect_data_conflicts` 用于检测新旧数据的结构性冲突，必须在 `CREATE` 流程中优先处理。
+
+---
+
+## 5. 常见 Debug 路径
+- **NameError in CLI**: 检查 `interface.py` 的变量名拼写（注意 Unicode 字符干扰）。
+- **Edit behaves like Copy**: 检查 `update` 方法是否丢失了 `_file_path`。
+- **Intent error**: 检查 `identify_intent` 的人工复核关键词列表是否包含用户的输入词。
+
+---
+*End of Context.*

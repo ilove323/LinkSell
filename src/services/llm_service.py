@@ -176,7 +176,7 @@ def summarize_text(content: str, api_key: str, endpoint_id: str) -> str:
 
 def classify_intent(text: str, api_key: str, endpoint_id: str) -> str:
     """
-    判断用户的意图：ANALYZE, QUERY, 或 OTHER。
+    判断用户的意图：CREATE, LIST, GET, UPDATE, DELETE, 或 OTHER。
     """
     client = Ark(api_key=api_key)
     system_prompt = load_prompt("classify_intent")
@@ -190,12 +190,11 @@ def classify_intent(text: str, api_key: str, endpoint_id: str) -> str:
             ],
             temperature=0.1, 
         )
+        # 直接返回 LLM 输出的关键词，由 Controller 负责后续的规范化和分发
         content = completion.choices[0].message.content.strip().upper()
-        if "ANALYZE" in content: return "ANALYZE"
-        if "QUERY" in content: return "QUERY"
-        return "OTHER"
+        return content
     except:
-        return "ANALYZE" # 默认走分析逻辑
+        return "CREATE" # 默认走创建/录入逻辑比较保险
 
 def query_sales_data(query: str, history_data: list, api_key: str, endpoint_id: str) -> str:
     """
@@ -221,24 +220,3 @@ def query_sales_data(query: str, history_data: list, api_key: str, endpoint_id: 
         return completion.choices[0].message.content.strip()
     except Exception as e:
         return f"查询出错啦：{e}"
-
-def is_sales_content(text: str, api_key: str, endpoint_id: str) -> bool:
-    """
-    判断输入内容是否为销售对话或业务相关记录。
-    """
-    client = Ark(api_key=api_key)
-    system_prompt = load_prompt("classify_content")
-    
-    try:
-        completion = client.chat.completions.create(
-            model=endpoint_id,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
-            ],
-            temperature=0.1, 
-        )
-        content = completion.choices[0].message.content.strip().upper()
-        return "TRUE" in content
-    except:
-        return True

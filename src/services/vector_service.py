@@ -43,7 +43,8 @@ class VectorService:
         content_text = self._format_record(record_data)
         embedding = self.model.encode(content_text).tolist()
         
-        self.collection.add(
+        # 使用 upsert，如果 ID 存在就更新，不存在就新增，这才是“增删改查”的精髓！
+        self.collection.upsert(
             embeddings=[embedding],
             documents=[content_text],
             metadatas=[{"json_data": json.dumps(record_data, ensure_ascii=False)}],
@@ -76,3 +77,40 @@ class VectorService:
                 for meta in meta_list:
                     history_snippets.append(json.loads(meta["json_data"]))
         return history_snippets
+
+    def search_projects(self, project_name: str, top_k=3):
+        """
+        专门搜索相似的项目名。
+        返回格式: [{"id": "...", "project_name": "...", "score": 0.85}, ...]
+        """
+        query_embedding = self.model.encode(project_name).tolist()
+        
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            # 这里可以加个 where 过滤，但目前所有记录都是混在一起的，
+            # 咱主要靠拿出来的结果看 project_name 字段。
+        )
+        
+        matches = []
+        if results and "metadatas" in results:
+            # results["distances"] 是距离，越小越近。Chroma 默认是 L2 距离。
+            # 为了方便理解，咱们可以不管分数，直接按顺序返回。
+            ids = results["ids"][0]
+            metadatas = results["metadatas"][0]
+            distances = results["distances"][0] if "distances" in results else [0]*len(ids)
+            
+            for rid, meta, dist in zip(ids, metadatas, distances):
+                try:
+                    data = json.loads(meta["json_data"])
+                    p_name = data.get("project_opportunity", {}).get("project_name")
+                    if not p_name: p_name = data.get("project_name", "未知项目")
+                    
+                    # 简单去重逻辑可以在 controller 做，这里只管吐数据
+                    matches.append({
+                        "id": rid,
+                        "project_name": p_name,
+                        "distance": dist
+                    })
+                except: pass
+        return matches
