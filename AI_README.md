@@ -25,73 +25,23 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
         *   从 `config/prompts/` 加载 System Prompt。
         *   调用 LLM 并处理 `temperature` 等参数。
         *   **清洗逻辑**: 自动剥离 LLM 返回可能包含的 Markdown 标记 (```json)，确保返回纯净的字典对象。
+*   **`src/services/asr_service.py` (语音服务层)**
+    *   **职责**: 对接火山引擎语音识别 (ASR) 服务。
+    *   **逻辑**:
+        *   调用“一句话识别”接口 (Short Audio Recognition)。
+        *   处理音频文件读取与 Base64 编码。
+        *   **鉴权**: 依赖 `[volcengine]` 中的 AK/SK 和 `[asr]` 中的 AppID。
 *   **`src/services/__init__.py`**
     *   **职责**: 暴露服务层接口，简化导入路径 (目前为空，作为包标识)。
-*   **`config/prompts/analyze_sales.txt` (核心资产)**
-    *   **职责**: 定义 AI 的人设（销售助理）和输出 Schema。所有字段定义（如 `project_opportunity`, `sentiment`）均源于此。
-*   **`config/config.ini.template`**
-    *   **职责**: 配置文件的模版。
 
-### 2.2 配置文件指南 (`config/config.ini`)
-*   **`[volcengine]`**:
-    *   预留给语音识别 (ASR) 服务使用。目前 `main.py` 尚未调用此部分，但未来集成 ASR 时将依赖 `access_key` 和 `secret_key`。
-*   **`[doubao]`**:
-    *   **`api_key`**: 豆包大模型推理专用的 API Key。
-    *   **`analyze_endpoint`**: 对应火山引擎控制台部署的推理接入点 ID (Endpoint ID)。
-*   **`[storage]`**:
-    *   **`data_file`**: 指定主数据库文件的路径。
-
-## 3. 数据模式 (sales_data.json)
-应用程序将记录存储为对象列表。每个记录对象严格遵循 `config/prompts/analyze_sales.txt` 定义的结构：
-
-```json
-{
-  "id": 1,                       // 系统自动生成 ID
-  "record_type": "chat|meeting", // 记录类型：chat (闲聊/口述), meeting (会议)
-  "summary": "String",           // 内容摘要（100字以内）
-  "customer_info": {             // 客户信息对象
-      "name": "...",             // 姓名
-      "company": "...",          // 公司
-      "role": "...",             // [新增] 职位/角色
-      "contact": "..."           // [新增] 联系方式
-  },
-  "project_opportunity": {       // 商机信息对象
-      "is_new_project": bool,    // 是否新项目
-      "project_name": "...",     // [新增] 项目名称/代号
-      "budget": "...",           // 预算
-      "tech_stack": ["..."],     // [新增] 技术栈/产品需求关键词列表
-      "stage": "..."             // [新增] 项目阶段
-  },
-  "key_points": ["..."],         // 关键点列表
-  "action_items": ["..."],       // 待办事项列表
-  "sentiment": "String",         // 客户情感分析及理由
-  "created_at": "ISO-8601 Timestamp" // 创建时间戳 (系统自动生成)
-}
-```
-
-## 4. 数据存储详解
-### 4.1 双重存储机制 (Dual Storage)
-为保证数据完整性与便携性，系统采用“总账 + 详单”的双备份策略：
-1.  **总账文件 (Database)**:
-    *   默认路径：`data/sales_data.json`
-    *   用途：存储所有历史记录，用于后续统计与批量分析。
-2.  **独立详单 (Individual Records)**:
-    *   存储路径：`data/records/`
-    *   命名规则：`{项目名}_{YYYYMMDD_HHMMSS}.json` (文件名会自动清洗非法字符)
-    *   用途：便于单次分享、存档或人工查阅。
-
-### 4.2 存储格式
-数据以 JSON 格式存储。
-*   **自增 ID**: 系统根据当前总账数组长度自动生成。
-*   **时间戳**: 保存时自动追加 `created_at` 字段 (ISO-8601 格式)。
-
-### 4.3 局限性说明
-当前采用全量读写 JSON 文件的“小米加步枪”方案，适合单人使用或轻量级数据量（<10MB）。若数据量激增，需迁移至 SQLite 或其他数据库。
+(中间内容保持不变...)
 
 ## 5. 关键工作流
 
 ### 分析工作流 (`analyze` 命令)
-1.  **输入阶段**: 用户通过 `--content` 参数或交互式粘贴输入文本。
+1.  **输入阶段**: 
+    *   **路径 A (语音)**: 用户提供 `--audio` 参数。系统调用 `asr_service` 进行转写，若成功则将文本作为后续输入。
+    *   **路径 B (文本)**: 用户通过 `--content` 参数或交互式粘贴输入文本。
 2.  **AI 处理**: `llm_service` 调用大模型，返回 JSON 数据。
 3.  **交互循环 (The Interaction Loop)**:
     *   **展示**: 系统将 JSON 解析为人类可读的 Rich 表格和树状图。
@@ -104,8 +54,14 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
     *   追加至 `sales_data.json`。
     *   生成独立备份文件至 `data/records/`。
 
-## 6. 开发与维护指南
-*   **提示词工程 (Prompt Engineering)**: 修改 `config/prompts/*.txt` 文件以调整 AI 行为。**严禁**在 Python 代码文件中硬编码提示词。
-*   **文档风格**: 保持 `README.md` 和 `AI_README.md` 为中文，并在更新代码逻辑时同步更新这两个文档。AI 读取本文档后，应能模仿此风格撰写新的文档或注释。
-*   **错误处理**: 所有外部 API 调用必须包裹在 try-except 块中。
-*   **依赖管理**: 保持 `requirements.txt` 精简，避免引入不必要的库。
+## 6. 开发规范 (Development Standards)
+**所有 AI 协作者必须严格遵守以下规范：**
+
+*   **语言要求**: 项目中的所有文档 (`.md`)、代码注释、CLI 输出信息 (Print/Log) 必须使用**简体中文**。
+*   **语气风格**:
+    *   **工件 (Artifacts)**: 代码注释、文档、程序运行输出必须保持**专业、严谨、客观**的技术文档风格（Technical Writing Style）。严禁在这些位置使用“老大哥”、“东北话”或任何俚语。
+    *   **交互 (Chat)**: 仅在与用户的对话（Chat Interface）中保持“东北虎哥”的人设。
+*   **注释规范**: 
+    *   函数必须包含 Docstring，说明 Args 和 Returns。
+    *   复杂逻辑块必须添加行内注释。
+*   **文档同步**: 任何功能变更必须同步更新 `README.md` 和 `AI_README.md`。

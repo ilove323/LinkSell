@@ -12,6 +12,14 @@ api_key = YOUR_DOUBAO_API_KEY
 # 销售提炼分析
 analyze_endpoint = ep-2024xxxxxxxx
 
+[asr]
+# 语音识别配置
+app_id = YOUR_APP_ID
+# 默认集群 (一般是 volcengine_input_common)
+cluster = volcengine_input_common
+# 是否开启标点符号 (True/False)
+enable_punc = True
+
 [storage]
 # 销售数据存储路径
 data_file = data/sales_data.json

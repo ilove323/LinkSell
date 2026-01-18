@@ -29,21 +29,52 @@ pip install -r requirements.txt
 ### 2. 配置密钥
 请将 `config/config.ini.template` 复制为 `config/config.ini`，并填入您的火山引擎 Access Key (AK)、Secret Key (SK) 及豆包大模型 API Key 和 Endpoint ID。
 
-### 3. 初始化项目
-运行以下命令以初始化数据文件及检查配置：
+### 2.3 语音识别配置 (ASR)
+若需使用语音转写功能，需在火山引擎控制台开通语音技术服务（ASR）。
+在 `config/config.ini` 中填入 AppID 及通用 Access Key：
+```ini
+[volcengine]
+access_key = AK...
+secret_key = SK...
+
+[asr]
+app_id = 12345678
+cluster = volcengine_input_common
+```
+
+## 3. 使用指南 (Usage)
+
+### 初始化
+首次运行前，请执行初始化命令以创建必要的数据文件：
 ```bash
 python src/main.py init
 ```
 
-### 4. 功能演示
-**提炼一段销售对话（支持直接参数输入或交互式粘贴）：**
-```bash
-# 方式 A：直接通过参数传参
-python src/main.py analyze --content "今天跟张总聊了个50万的大单子..."
+### 核心功能：销售分析 (Analyze)
+支持**文本粘贴**和**语音文件**两种输入方式。
 
-# 方式 B：交互式输入（适合粘贴大段会议纪要）
+#### 方式一：文本分析
+直接分析文本内容，支持交互式输入或命令行参数：
+```bash
+# 交互式输入（推荐）
 python src/main.py analyze
+
+# 命令行直接输入
+python src/main.py analyze --content "今天跟张总聊了一下，他对我们的SaaS平台很感兴趣，预算大概50万..."
 ```
+
+#### 方式二：语音分析 (新增)
+指定录音文件路径，系统将自动转写并进行分析：
+```bash
+python src/main.py analyze --audio "/Users/laurant/Downloads/meeting_recording.mp3"
+```
+*注：目前支持 wav, mp3 等常见音频格式，建议使用时长在 60 秒以内的短语音进行测试。*
+
+### 交互式编辑
+分析完成后，系统将展示结构化报表。您可以：
+*   输入 `s`: 确认并保存。
+*   输入 `e`: 调用系统默认编辑器（如 Vim, Notepad）手动修正 AI 提取的结果。
+*   输入 `d`: 丢弃本次结果。
 
 ## 📁 目录结构说明
 ```text

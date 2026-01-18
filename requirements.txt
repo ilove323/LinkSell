@@ -1,6 +1,7 @@
 typer
 rich
-volcengine-python-sdk
+volcengine-python-sdk[ark]
 httpx
+requests
 configparser
 pydantic
