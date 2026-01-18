@@ -9,23 +9,37 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
 *   **现状说明**: 目前主要支持**文本输入**的分析与存储。ASR（语音转写）功能在 `record` 命令中仅为占位符，尚未完全实装。
 *   **文档规范**: 所有文档（包括本文档）均应使用**中文**编写，并遵循标准技术文档格式。
 
-## 2. 目录结构与关键文件
+## 2. 代码库深度解析 (Codebase Deep Dive)
 
-*   **`src/main.py`**: 应用程序入口点。
-    *   定义 Typer 命令：`init` (初始化), `record` (记录 - 暂未实装核心逻辑), `analyze` (分析 - 核心功能)。
-    *   处理 CLI 参数并通过 `rich` 库提供用户交互界面。
-    *   管理数据持久化逻辑（读取/写入 JSON）。
-*   **`src/services/llm_service.py`**:
-    *   封装对豆包（火山引擎）大模型的调用逻辑。
-    *   从 `config/prompts/` 目录动态加载系统提示词。
-    *   将原始 LLM 响应解析为结构化的 Python 字典（JSON）。
-*   **`config/prompts/analyze_sales.txt`**:
-    *   用于销售内容分析的系统提示词（System Prompt）。
-    *   定义了输出数据必须严格遵循的 JSON 模式（Schema）。
-*   **`config/config.ini`**:
-    *   存储敏感凭据（API Keys, Endpoint IDs）及文件路径配置。
-    *   接入点按功能区分，如 `analyze_endpoint` 用于销售内容提炼。
-    *   **安全提示**: 严禁在代码输出或日志中泄露此文件内的实际密钥。
+### 2.1 文件功能与逻辑映射
+*   **`src/main.py` (CLI 入口)**
+    *   **职责**: 整个程序的指挥官。负责参数解析 (Typer)、界面渲染 (Rich) 和流程控制。
+    *   **核心逻辑**:
+        *   `init`: 创建 `data/sales_data.json` 和 `data/records/` 目录。
+        *   `analyze`: 实现了 **"AI 分析 -> 人话展示 -> 交互式编辑 (Edit Loop) -> 双重存储"** 的完整闭环。
+        *   `sanitize_filename`: 确保生成的独立文件名在任何操作系统上都合法。
+    *   **交互细节**: 使用 `typer.edit()` 调用系统编辑器，允许用户在保存前修正 AI 的 JSON 结果。
+*   **`src/services/llm_service.py` (AI 服务层)**
+    *   **职责**: 对接火山引擎 Ark Runtime。
+    *   **逻辑**: 
+        *   从 `config/prompts/` 加载 System Prompt。
+        *   调用 LLM 并处理 `temperature` 等参数。
+        *   **清洗逻辑**: 自动剥离 LLM 返回可能包含的 Markdown 标记 (```json)，确保返回纯净的字典对象。
+*   **`src/services/__init__.py`**
+    *   **职责**: 暴露服务层接口，简化导入路径 (目前为空，作为包标识)。
+*   **`config/prompts/analyze_sales.txt` (核心资产)**
+    *   **职责**: 定义 AI 的人设（销售助理）和输出 Schema。所有字段定义（如 `project_opportunity`, `sentiment`）均源于此。
+*   **`config/config.ini.template`**
+    *   **职责**: 配置文件的模版。
+
+### 2.2 配置文件指南 (`config/config.ini`)
+*   **`[volcengine]`**:
+    *   预留给语音识别 (ASR) 服务使用。目前 `main.py` 尚未调用此部分，但未来集成 ASR 时将依赖 `access_key` 和 `secret_key`。
+*   **`[doubao]`**:
+    *   **`api_key`**: 豆包大模型推理专用的 API Key。
+    *   **`analyze_endpoint`**: 对应火山引擎控制台部署的推理接入点 ID (Endpoint ID)。
+*   **`[storage]`**:
+    *   **`data_file`**: 指定主数据库文件的路径。
 
 ## 3. 数据模式 (sales_data.json)
 应用程序将记录存储为对象列表。每个记录对象严格遵循 `config/prompts/analyze_sales.txt` 定义的结构：
@@ -77,16 +91,20 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
 ## 5. 关键工作流
 
 ### 分析工作流 (`analyze` 命令)
-1.  用户通过 `--content` 参数输入文本内容，**若未提供参数，程序会提示用户进行交互式粘贴输入**。
-2.  `main.py` 从配置文件加载 API 密钥。
-3.  `llm_service.py` 读取 `config/prompts/analyze_sales.txt` 中的提示词。
-4.  向豆包大模型发送请求（设置 temperature=0.1 以保证输出稳定性）。
-5.  LLM 返回 JSON 字符串。
-6.  服务层解析 JSON 并返回 Python 字典对象。
-7.  `main.py` 使用 `rich` 面板展示分析结果。
-8.  若用户确认保存，`main.py` 将记录追加至 `data/sales_data.json` 文件。
+1.  **输入阶段**: 用户通过 `--content` 参数或交互式粘贴输入文本。
+2.  **AI 处理**: `llm_service` 调用大模型，返回 JSON 数据。
+3.  **交互循环 (The Interaction Loop)**:
+    *   **展示**: 系统将 JSON 解析为人类可读的 Rich 表格和树状图。
+    *   **决策**: 用户选择操作：
+        *   `s` (Save): 确认无误，执行保存。
+        *   `d` (Discard): 放弃本次结果。
+        *   `e` (Edit): 调用系统默认编辑器打开 JSON 原文。
+    *   **修正**: 用户在编辑器中修改并保存关闭后，系统重新解析 JSON 并回到“展示”步骤。
+4.  **持久化**: 
+    *   追加至 `sales_data.json`。
+    *   生成独立备份文件至 `data/records/`。
 
-## 5. 开发与维护指南
+## 6. 开发与维护指南
 *   **提示词工程 (Prompt Engineering)**: 修改 `config/prompts/*.txt` 文件以调整 AI 行为。**严禁**在 Python 代码文件中硬编码提示词。
 *   **文档风格**: 保持 `README.md` 和 `AI_README.md` 为中文，并在更新代码逻辑时同步更新这两个文档。AI 读取本文档后，应能模仿此风格撰写新的文档或注释。
 *   **错误处理**: 所有外部 API 调用必须包裹在 try-except 块中。
