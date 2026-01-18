@@ -18,10 +18,15 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # 导入业务服务模块
 try:
-    from src.services.llm_service import analyze_text, refine_sales_data
+    from src.services.llm_service import analyze_text, refine_sales_data, polish_text
     from src.services.asr_service import transcribe_audio
 except ImportError:
     pass
+
+try:
+    from src.services.audio_capture import record_audio_until_enter
+except ImportError:
+    record_audio_until_enter = None
 
 app = typer.Typer()
 console = Console()
@@ -48,34 +53,34 @@ def sanitize_filename(name: str) -> str:
     Returns:
         str: 清洗后的安全文件名。
     """
-    return re.sub(r'[\\/*?:\"<>|]', "", name).strip().replace(" ", "_")
+    return re.sub(r'[\\/*?:"<>|]', "", name).strip().replace(" ", "_")
 
 def display_result_human_readable(data: dict):
     """
     以人类可读的格式（Rich 表格和树状图）展示分析结果。
     """
     # 1. 基础信息表
-    table = Table(title="[bold green]📊 销售记录分析报告[/bold green]", show_header=False, box=None)
+    table = Table(title="[bold green]销售记录分析报告[/bold green]", show_header=False, box=None)
     table.add_column("Key", style="bold cyan")
     table.add_column("Value")
 
-    type_map = {"chat": "🗣️ 随手记/闲聊", "meeting": "👔 正式会议"}
+    type_map = {"chat": "随手记/闲聊", "meeting": "正式会议"}
     record_type = type_map.get(data.get("record_type"), data.get("record_type"))
     
     table.add_row("记录类型", record_type)
-    table.add_row("👨‍💼 我方销售", data.get("sales_rep", "未知"))
-    table.add_row("📝 核心摘要", data.get("summary", "暂无"))
+    table.add_row("我方销售", data.get("sales_rep", "未知"))
+    table.add_row("核心摘要", data.get("summary", "暂无"))
     
     # 客户情感着色
     sentiment = data.get("sentiment", "未知")
     sentiment_color = "green" if "积极" in str(sentiment) else ("red" if "消极" in str(sentiment) else "yellow")
-    table.add_row("😊 客户态度", f"[{sentiment_color}]{sentiment}[/{sentiment_color}]")
+    table.add_row("客户态度", f"[{sentiment_color}]{sentiment}[/{sentiment_color}]")
 
     console.print(table)
     console.print("")
 
     # 2. 客户信息树
-    cust_tree = Tree("[bold blue]👤 客户画像[/bold blue]")
+    cust_tree = Tree("[bold blue]客户画像[/bold blue]")
     cust_info = data.get("customer_info", {})
     if cust_info:
         cust_tree.add(f"姓名: [bold]{cust_info.get('name', 'N/A')}[/bold]")
@@ -88,11 +93,11 @@ def display_result_human_readable(data: dict):
     console.print("")
 
     # 3. 商机详情树
-    opp_tree = Tree("[bold gold1]💰 商机概览[/bold gold1]")
+    opp_tree = Tree("[bold gold1]商机概览[/bold gold1]")
     opp_info = data.get("project_opportunity", {})
     if opp_info:
         proj_name = opp_info.get("project_name", "未命名项目")
-        is_new = "✨ 新项目" if opp_info.get("is_new_project") else "🔄 既有项目"
+        is_new = "新项目" if opp_info.get("is_new_project") else "既有项目"
         opp_tree.add(f"项目: [bold]{proj_name}[/bold] ({is_new})")
         opp_tree.add(f"阶段: {opp_info.get('stage', '未知')}")
         opp_tree.add(f"预算: [green]{opp_info.get('budget', '未知')}[/green]")
@@ -100,7 +105,7 @@ def display_result_human_readable(data: dict):
         opp_tree.add(f"流程: {opp_info.get('procurement_process', '未知')}")
         opp_tree.add(f"付款: {opp_info.get('payment_terms', '未知')}")
         
-        comp_node = opp_tree.add("⚔️ 竞争对手")
+        comp_node = opp_tree.add("竞争对手")
         competitors = opp_info.get("competitors", [])
         if competitors:
             for comp in competitors:
@@ -108,7 +113,7 @@ def display_result_human_readable(data: dict):
         else:
             comp_node.add("[dim]无明确竞争对手[/dim]")
 
-        tech_node = opp_tree.add("🛠️ 我方参与技术")
+        tech_node = opp_tree.add("我方参与技术")
         tech_stack = opp_info.get("tech_stack", [])
         if tech_stack:
             for tech in tech_stack:
@@ -132,7 +137,7 @@ def display_result_human_readable(data: dict):
     max_items = max(len(kp_list), len(action_list))
     
     kp_text = Text()
-    kp_text.append("📌 关键点：\n", style="bold magenta")
+    kp_text.append("关键点：\n", style="bold magenta")
     for idx, point in enumerate(kp_list, 1):
         kp_text.append(f"{idx}. {point}\n")
     # 填充空行以对齐高度
@@ -140,7 +145,7 @@ def display_result_human_readable(data: dict):
         kp_text.append("\n" * (max_items - len(kp_list)))
     
     action_text = Text()
-    action_text.append("✅ 待办事项：\n", style="bold red")
+    action_text.append("待办事项：\n", style="bold red")
     for idx, item in enumerate(action_list, 1):
         action_text.append(f"{idx}. {item}\n")
     # 填充空行以对齐高度
@@ -229,7 +234,7 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
     user_supplements = {}
     missing_count = 0
 
-    console.print(Panel("[bold yellow]正在检查数据完整性...[/bold yellow]", style="yellow"))
+    console.print(Panel("[bold yellow]正在为您核对记录的完整性，请稍候...[/bold yellow]", style="yellow"))
 
     for field_key, (field_name, parent_key) in required_config.items():
         # 获取字段值
@@ -252,7 +257,7 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
         if is_missing:
             missing_count += 1
             user_input = typer.prompt(
-                f"检测到必要字段 [{field_name}] 缺失，请输入补充信息 (输入 '无' 跳过)", 
+                f"老板，我注意到 [{field_name}] 尚未填写，为了记录更完整，您看需要补充一下吗？(若暂无请回复 '无')", 
                 default="", 
                 show_default=False
             )
@@ -261,15 +266,15 @@ def check_and_fill_missing_fields(data: dict, api_key: str, endpoint_id: str):
                 user_supplements[field_key] = user_input
 
     if user_supplements:
-        console.print("[blue]接收到补充信息，正在调用 AI 进行格式化与校验...[/blue]")
+        console.print("[blue]好的，收到您的补充，我这就为您整理格式并进行校验...[/blue]")
         # 调用 LLM 进行清洗和校验
         refined_data = refine_sales_data(data, user_supplements, api_key, endpoint_id)
         return refined_data
     
     if missing_count == 0:
-        console.print("[green]数据完整性校验通过。[/green]")
+        console.print("[green]关键信息已核对完毕，记录非常完整！[/green]")
     else:
-        console.print("[dim]部分非必要信息已跳过补充。[/dim]")
+        console.print("[dim]好的，部分信息已按照您的要求跳过补充。[/dim]")
 
     return data
 
@@ -310,52 +315,85 @@ def record(note_type: str = typer.Option(..., prompt="请输入记录类型(meet
 @app.command()
 def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼的对话/会议文本内容"),
             audio_file: str = typer.Option(None, "--audio", "-a", help="要识别的录音文件路径 (支持 wav/mp3)"),
-            save: bool = typer.Option(False, "--save", "-s", help="是否直接保存结果")):
+            use_mic: bool = typer.Option(False, "--microphone", "-m", help="使用麦克风直接录音"),
+            save: bool = typer.Option(False, "--save", "-s", help="是否直接保存结果"),
+            debug: bool = typer.Option(False, "--debug", help="开启调试模式，显示详细日志")):
     """
     核心功能：分析销售数据。
     支持输入文本或语音文件，调用 AI 进行结构化提炼，并提供交互式编辑与保存功能。
     """
     
-    # 1. 优先处理语音输入
+    # 0. 优先处理麦克风输入
+    if use_mic:
+        # 生成临时文件路径
+        tmp_dir = Path("data/tmp")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        mic_file_path = tmp_dir / f"mic_recording_{timestamp}.wav"
+        
+        # 调用录音模块
+        if record_audio_until_enter(str(mic_file_path)):
+            audio_file = str(mic_file_path) # 将录音文件传递给后续逻辑
+        else:
+            return # 录音失败直接退出
+
+    # 1. 优先处理语音输入 (包括录制或指定文件)
     if audio_file:
         console.print(f"[bold cyan]🎤 检测到录音文件：{audio_file}[/bold cyan]")
         
         # 验证 ASR 配置
         asr_app_id = config.get("asr", "app_id", fallback=None)
-        volc_ak = config.get("volcengine", "access_key", fallback=None)
-        volc_sk = config.get("volcengine", "secret_key", fallback=None)
+        asr_token = config.get("asr", "access_token", fallback=None)
+        asr_resource = config.get("asr", "resource_id", fallback="volc.seedasr.auc")
         
-        if not asr_app_id or not volc_ak or not volc_sk or "YOUR_" in volc_ak:
-            console.print("[bold red]错误：语音识别配置缺失。[/bold red]")
-            console.print("请检查 config.ini 中的 [asr] 和 [volcengine] 配置项。")
+        # 自动修正：如果用户配置文件里还残留着旧的同步接口 ID，强制改为正确的异步大模型 ID
+        if asr_resource == "volc.bigasr.sauc.duration":
+            asr_resource = "volc.seedasr.auc"
+        
+        if not asr_app_id or not asr_token or "YOUR_" in asr_token:
+            console.print("[bold red]错误：ASR 大模型配置不完整。[/bold red]")
+            console.print("请确保 config.ini [asr] 部分包含有效的 app_id 和 access_token。")
+            console.print("参考文档：https://www.volcengine.com/docs/6561/1354868")
             return
             
         # 执行语音转写
-        transcribed_text = transcribe_audio(audio_file, asr_app_id, volc_ak, volc_sk)
+        transcribed_text = transcribe_audio(audio_file, asr_app_id, asr_token, asr_resource, debug=debug)
         
         if transcribed_text:
             content = transcribed_text
-            console.print(Panel(content, title="[bold green]🎙️ 语音识别结果[/bold green]"))
+            # 这里不再打印 "语音识别结果" 面板，留给后面统一的文本润色展示
         else:
-            console.print("[bold red]语音识别失败，请检查文件或网络连接。[/bold red]")
+            console.print("[bold red]语音识别失败，请检查配置或音频文件格式。[/bold red]")
+            return
 
     # 2. 若无输入，进入交互模式
     if not content:
         console.print("[bold yellow]请输入会议记录或销售对话内容（按回车确认）：[/bold yellow]")
         content = typer.prompt("内容")
 
+    # === 新增：文本润色环节 ===
+    # 验证 LLM 配置 (润色也需要 LLM)
+    api_key = config.get("doubao", "api_key", fallback=None)
+    endpoint_id = config.get("doubao", "analyze_endpoint", fallback=None)
+    
+    if not api_key or not endpoint_id or "YOUR_" in api_key:
+        console.print("[bold red]错误：大模型配置缺失。[/bold red]")
+        console.print("请检查 config.ini 中的 [doubao] 配置项。")
+        return
+
+    console.print(Panel("[bold cyan]正在进行文本润色与格式化...[/bold cyan]", style="cyan"))
+    polished_content = polish_text(content, api_key, endpoint_id)
+    
+    if polished_content:
+        console.print(Panel(polished_content, title="[bold green]📝 整理后的文本[/bold green]"))
+        content = polished_content # 使用润色后的文本进行后续分析
+    else:
+        console.print("[yellow]文本润色失败，将使用原始文本进行分析。[/yellow]")
+    # ========================
+
     console.print(Panel("[bold yellow]AI 正在分析数据，请稍候...[/bold yellow]", title="处理中"))
     
     try:
-        # 验证 LLM 配置
-        api_key = config.get("doubao", "api_key", fallback=None)
-        endpoint_id = config.get("doubao", "analyze_endpoint", fallback=None)
-        
-        if not api_key or not endpoint_id or "YOUR_" in api_key:
-            console.print("[bold red]错误：大模型配置缺失。[/bold red]")
-            console.print("请检查 config.ini 中的 [doubao] 配置项。")
-            return
-
         # 执行 AI 分析
         from src.services.llm_service import analyze_text
         result = analyze_text(content, api_key, endpoint_id)

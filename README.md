@@ -31,7 +31,9 @@ pip install -r requirements.txt
 
 ### 2.3 语音识别配置 (ASR)
 若需使用语音转写功能，需在火山引擎控制台开通语音技术服务（ASR）。
-在 `config/config.ini` 中填入 AppID 及通用 Access Key：
+本项目采用 **大模型语音识别服务 (Big Model ASR)**，需配置 Access Token 而非 AK/SK。
+
+在 `config/config.ini` 中填入 AppID 及 Access Token：
 ```ini
 [volcengine]
 access_key = AK...
@@ -39,8 +41,12 @@ secret_key = SK...
 
 [asr]
 app_id = 12345678
+access_token = YOUR_ACCESS_TOKEN_HERE
+resource_id = volc.bigasr.auc
 cluster = volcengine_input_common
 ```
+*注意：`resource_id` 必须为 `volc.bigasr.auc`，请勿修改。**   `config/prompts/*.txt`: 存放 AI 系统提示词（Prompt）。
+*   `config/ui_templates.json`: 存放 CLI 界面交互的文本模板（如“秘书”风格的提示语），支持自定义。
 
 ## 3. 使用指南 (Usage)
 
@@ -69,6 +75,13 @@ python src/main.py analyze --content "今天跟张总聊了一下，他对我们
 python src/main.py analyze --audio "/Users/laurant/Downloads/meeting_recording.mp3"
 ```
 *注：目前支持 wav, mp3 等常见音频格式，建议使用时长在 60 秒以内的短语音进行测试。*
+
+#### 方式三：麦克风直接录音 (Direct Microphone)
+直接通过麦克风录制语音，按回车键停止录音并立即开始分析：
+```bash
+python src/main.py analyze --microphone
+```
+*注：需确保终端具有麦克风访问权限。*
 
 ### 智能数据补全 (Smart Completion)
 系统在分析过程中会自动检测商机关键信息（如预算、时间节点、竞争对手等）是否缺失。

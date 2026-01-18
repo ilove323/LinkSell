@@ -7,18 +7,18 @@ region = cn-north-1
 [doubao]
 # 豆包大模型通用 API Key
 api_key = YOUR_DOUBAO_API_KEY
-
-# 各功能对应的接入点 (Endpoint ID)
-# 销售提炼分析
+# 销售提炼分析接入点 (Endpoint ID)
 analyze_endpoint = ep-2024xxxxxxxx
 
 [asr]
-# 语音识别配置
+# 语音识别配置 (大模型录音文件识别标准版 V3)
 app_id = YOUR_APP_ID
-# 默认集群 (一般是 volcengine_input_common)
+# 访问令牌 (Access Token，在语音技术控制台获取)
+access_token = YOUR_ACCESS_TOKEN
+# 资源 ID (必须使用已授权的 ID，如 volc.seedasr.auc)
+resource_id = volc.seedasr.auc
+# 集群 (默认 volcengine_input_common)
 cluster = volcengine_input_common
-# 是否开启标点符号 (True/False)
-enable_punc = True
 
 [storage]
 # 销售数据存储路径

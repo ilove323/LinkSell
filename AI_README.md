@@ -26,11 +26,18 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
         *   `refine_sales_data`: 接收用户补充的碎片化信息，结合原始数据进行校验、格式化（如统一金额单位）与合并。
         *   **清洗逻辑**: 自动剥离 LLM 返回可能包含的 Markdown 标记 (```json)，确保返回纯净的字典对象。
 *   **`src/services/asr_service.py` (语音服务层)**
-    *   **职责**: 对接火山引擎语音识别 (ASR) 服务。
+    *   **职责**: 对接火山引擎 ASR 大模型任务接口。
     *   **逻辑**:
-        *   调用“一句话识别”接口 (Short Audio Recognition)。
-        *   处理音频文件读取与 Base64 编码。
-        *   **鉴权**: 依赖 `[volcengine]` 中的 AK/SK 和 `[asr]` 中的 AppID。
+        *   采用 **"提交 (Submit) -> 轮询 (Query)"** 的异步转同步模式。
+        *   基于用户验证通过的 V3 接口协议实现。
+        *   **鉴权**: 必须在 `[asr]` 配置项中提供 `app_id` 和 `access_token`。
+        *   **性能**: 内部包含轮询等待逻辑，对业务层保持同步调用体感。
+*   **`src/services/audio_capture.py` (录音服务层)**
+    *   **职责**: 提供跨平台的麦克风录音功能。
+    *   **逻辑**:
+        *   基于 `sounddevice` 和 `numpy` 采集音频数据。
+        *   监听用户键盘输入 (回车键) 以控制录音时长。
+        *   保存为标准 `.wav` 文件供 ASR 服务使用。
 *   **`src/services/__init__.py`**
     *   **职责**: 暴露服务层接口，简化导入路径 (目前为空，作为包标识)。
 
@@ -39,6 +46,11 @@ LinkSell 是一个基于命令行的客户关系管理（CRM）工具，利用�
 *   **`config/prompts/`**: 存储 System Prompts。
     *   `analyze_sales.txt`: 用于初始分析，定义了严格的 JSON 输出格式（含商机、客户画像、竞争对手等字段）。
     *   `refine_sales.txt`: 用于数据校验，处理用户补录的碎片化信息。
+
+**重要 ASR 配置说明**:
+ASR 服务使用大模型接口 (Big Model ASR)，其鉴权方式与普通 API 不同：
+*   **Access Token**: 必须使用火山引擎控制台生成的 Access Token，而非 Access Key。
+*   **Resource ID**: 必须设置为 `volc.bigasr.auc`。
 
 ## 3. 数据结构 (Data Schema)
 AI 分析后的数据结构（JSON）包含以下关键字段：

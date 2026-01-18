@@ -1,7 +1,13 @@
 typer
 rich
+volcengine
 volcengine-python-sdk[ark]
 httpx
 requests
 configparser
 pydantic
+sounddevice
+numpy
+scipy
+urllib3<2.0.0
+websocket-client
