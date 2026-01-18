@@ -514,30 +514,32 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
             console.print("[dim]已退出分析模式。[/dim]")
             break
         
-        # 1. 意图识别 (The Brain)
+        # 1. 意图识别 (The Brain) - 返回 {"intent": "...", "content": "..."}
         with console.status("[bold yellow]正在分析您的意图...", spinner="dots"):
-            intent = controller.identify_intent(content)
+            result = controller.identify_intent(content)
+            intent = result.get("intent", "CREATE")
+            extracted_content = result.get("content", content)
         
         console.print(f"[dim]识别意图: {intent}[/dim]")
 
-        # 2. 意图分发 (The Dispatcher)
+        # 2. 意图分发 (The Dispatcher) - 使用提取的内容
         if intent == "CREATE":
-            handle_create_logic(content)
+            handle_create_logic(extracted_content)
         elif intent == "LIST":
-            handle_list_logic(content)
+            handle_list_logic(extracted_content)
         elif intent == "GET":
-            handle_get_logic(content)
+            handle_get_logic(extracted_content)
         elif intent == "UPDATE":
-            handle_update_logic(content)
+            handle_update_logic(extracted_content)
         elif intent == "DELETE":
-            handle_delete_logic(content)
+            handle_delete_logic(extracted_content)
         elif intent == "OTHER":
             console.print(f"[yellow]{get_random_ui('intent_other_hint')}[/yellow]")
             # 也可以 fallback 到 RAG
-            # controller.handle_query(content) 
+            # controller.handle_query(extracted_content) 
         else:
             # Fallback
-            handle_create_logic(content)
+            handle_create_logic(extracted_content)
         
         # 获取下一次输入
         console.print("")

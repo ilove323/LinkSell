@@ -26,22 +26,24 @@ LinkSell 严格遵循 **MVC 架构设计**，确保了代码的可维护性与�
 
 ---
 
-## 🧠 四重输入规范化 (The Four Pillars)
+## 🧠 输入规范化体系 (The Processing Pipeline)
 
-这是 LinkSell 2.4 的核心灵魂，通过四种专门调教的 Prompt 确保人机交互的严丝合缝：
+这是 LinkSell 2.4 的核心灵魂，通过专门调教的 Prompt 确保人机交互的严丝合缝：
 
-1.  **意图分流 (Intent Classifier)**：
+1.  **意图分流与内容提取 (Intent Classifier + Content Extractor)**：
     - **关键词**: `classify_intent.txt`
-    - **作用**: 判断用户是想 **CREATE**(新建), **LIST**(列表), **GET**(详情), **UPDATE**(修改), 还是 **DELETE**(删除)。
-2.  **实体提取 (Entity Extractor)**：
-    - **关键词**: `extract_search_term.txt`
-    - **作用**: 从口语中精准抠出项目名（如从“删了那个轴承厂”提取出“轴承厂”）。
-3.  **填空规范化 (Input Formatter)**：
+    - **作用**: **一步到位**判断用户是想 **CREATE**(新建), **LIST**(列表), **GET**(详情), **UPDATE**(修改), **DELETE**(删除)，同时从输入中提取业务相关内容。
+    - **输出格式**: JSON 格式 `{"intent": "CREATE", "content": "具体的业务内容"}`，内容已去掉意图关键词
+    - **例子**: "把轴承厂的预算改成80万" → `{"intent": "UPDATE", "content": "轴承厂的预算改成80万"}`
+2.  **填空规范化 (Input Formatter)**：
     - **关键词**: `normalize_input.txt`
-    - **作用**: 将“五十个达不溜”转化为“50万”，并识别“不知道/跳过”等无效意图并转为 `NULL`。
-4.  **布尔判官 (Boolean Judge)**：
+    - **作用**: 将"五十个达不溜"转化为"50万"，并识别"不知道/跳过"等无效意图并转为 `NULL`。
+3.  **布尔判官 (Boolean Judge)**：
     - **关键词**: `judge_save.txt`
-    - **作用**: 听懂一切肯定或否定的潜台词（如“改了吧”、“算了”、“确认”）。
+    - **作用**: 听懂一切肯定或否定的潜台词（如"改了吧"、"算了"、"确认"）。
+4.  **补充分析 (Analysis & Enhancement)**：
+    - **关键词**: `analyze_sales.txt`, `update_sales.txt`, `polish_text.txt`
+    - **作用**: 对结构化数据进行深度分析、自然语言驱动更新和文本润色。
 
 ---
 

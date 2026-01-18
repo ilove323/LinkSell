@@ -74,30 +74,46 @@ class LinkSellController:
         return analyze_text(text, self.api_key, self.endpoint_id)
 
     def identify_intent(self, text):
-        """识别意图：CREATE, LIST, GET, UPDATE, DELETE, OTHER"""
+        """识别意图和内容，返回 {"intent": "...", "content": "..."}"""
         if not self.validate_llm_config():
-            return "CREATE"
+            return {"intent": "CREATE", "content": text}
         
-        # 调用 LLM 进行分类
-        intent = classify_intent(text, self.api_key, self.endpoint_id)
+        # 调用 LLM 进行分类，期望返回 JSON 格式
+        result = classify_intent(text, self.api_key, self.endpoint_id)
         
-        # 严格规范化
+        # 尝试解析 JSON 响应
+        try:
+            if isinstance(result, dict):
+                parsed = result
+            else:
+                # 如果 LLM 返回字符串，尝试解析
+                parsed = json.loads(result) if isinstance(result, str) else {"intent": result}
+            
+            intent = parsed.get("intent", "CREATE").upper()
+            content = parsed.get("content", text)
+        except:
+            # JSON 解析失败，降级为关键词判断
+            intent = "CREATE"
+            content = text
+            if any(k in text for k in ["查", "找", "看", "哪些", "搜索"]): 
+                intent = "LIST"
+            elif any(k in text for k in ["删", "移除"]): 
+                intent = "DELETE"
+            elif any(k in text for k in ["改", "更新", "换"]): 
+                intent = "UPDATE"
+        
+        # 严格规范化意图
         valid_intents = ["CREATE", "LIST", "GET", "UPDATE", "DELETE", "OTHER"]
         if intent not in valid_intents:
-            # 尝试关键词补救
-            if any(k in text for k in ["查", "找", "看", "哪些", "搜索"]): return "LIST"
-            if any(k in text for k in ["删", "移除"]): return "DELETE"
-            if any(k in text for k in ["改", "更新", "换"]): return "UPDATE"
-            return "CREATE"
-            
+            intent = "CREATE"
+        
         # OTHER 的人工复核：防止对业务指令的误杀
         if intent == "OTHER":
-            # 业务核心词汇列表
             biz_keywords = ["项目", "商机", "单子", "客户", "聊", "聊过", "谈", "预算", "进度", "跟进", "详情", "档案"]
             if len(text) > 8 or any(k in text for k in biz_keywords):
-                # 如果包含业务词，默认转为查询意图 (LIST) 比较稳妥，让后续逻辑去搜
-                return "LIST"
-                
+                intent = "LIST"
+        
+        return {"intent": intent, "content": content}
         return intent
 
     def extract_search_term(self, text):

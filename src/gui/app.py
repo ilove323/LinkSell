@@ -257,87 +257,130 @@ def handle_logic(prompt):
     if not prompt: return
     
     if st.session_state.step == "input":
-        intent = st.session_state.controller.identify_intent(prompt)
-        if intent == "QUERY":
-            # --- 增强：详情直通车 (GUI版) ---
-            detail_keywords = ["详情", "详细", "档案", "全貌", "资料"]
-            if any(kw in prompt for kw in detail_keywords) and st.session_state.controller.vector_service:
-                # 简单提取关键字（为了省事直接用全句搜，效果一般也够用）
-                query_name = prompt
-                for kw in detail_keywords: query_name = query_name.replace(kw, "")
-                query_name = query_name.replace("查看", "").replace("看看", "").replace("的", "").strip()
-                
-                if query_name:
-                    with st.spinner("正在定位商机..."):
-                        # 复用 controller 的 search_opportunities 
-                        # (注意: 这里其实可以用 find_potential_matches 更加严谨，但 GUI 交互比较简单，先用 search_projects)
-                        matches = st.session_state.controller.vector_service.search_projects(query_name, top_k=1)
-                        if matches:
-                             target_opp = st.session_state.controller.get_opportunity_by_id(matches[0]["id"])
-                             if target_opp:
-                                 add_ai_message(f"已为您找到相关项目：**{target_opp.get('project_opportunity', {}).get('project_name')}**")
-                                 add_report_message(target_opp)
-                                 return
+        # 识别意图并分发给相应的处理函数 (参考 CLI 逻辑)
+        with st.spinner("正在分析您的意图..."):
+            result = st.session_state.controller.identify_intent(prompt)
+            intent = result.get("intent", "CREATE")
+            extracted_content = result.get("content", prompt)
+        
+        if intent == "CREATE":
+            # 新建商机流程
+            with st.spinner(get_ui_text("polishing_start", "正在润色...")):
+                polished = st.session_state.controller.polish(extracted_content)
+                st.session_state.last_polished_text = polished
+
+            with st.spinner(get_ui_text("analysis_start", "分析中...")):
+                data = st.session_state.controller.analyze(polished)
+                if not data: 
+                    add_ai_message("分析失败。")
+                    return
             
-            # 普通查询 Fallback
-            with st.spinner(get_ui_text("processing_query", "正在检索...")):
-                answer = st.session_state.controller.handle_query(prompt)
-                if answer == "__EMPTY_DB__": add_ai_message(get_ui_text("empty_db_hint"))
-                elif answer == "__ERROR_CONFIG__": add_ai_message(get_ui_text("query_error", "配置无效"))
-                else: add_ai_message(answer)
-                return
-        if intent == "OTHER":
-            add_ai_message(get_ui_text("intent_other_hint"))
-            return
-        with st.spinner(get_ui_text("analysis_start", "分析中...")):
-            polished = st.session_state.controller.polish(prompt)
-            st.session_state.last_polished_text = polished
-            data = st.session_state.controller.analyze(polished)
             st.session_state.sales_data = data
             add_report_message(data)
-            st.session_state.step = "ask_create_opportunity"
-            add_ai_message(get_ui_text("ask_create_opportunity"))
-            return
-
-    elif st.session_state.step == "ask_create_opportunity":
-        # 使用 Controller 的统一判断逻辑 (含本地快筛 + LLM)
-        if st.session_state.controller.judge_user_affirmative(prompt):
-            st.session_state.step = "search_project"
-            add_ai_message(get_ui_text("ask_search_project"))
-        else:
-            st.session_state.step = "review"
-            add_ai_message("明白，那就仅作为一条普通记录保存。您看还有什么要改的吗？")
-
-    elif st.session_state.step == "search_project":
-        matches = st.session_state.controller.search_opportunities(prompt)
-        if not matches:
-            add_ai_message(f"未找到包含‘{prompt}’的项目，请重新输入关键字，或点击下方按钮新建商机。")
-        elif len(matches) == 1:
-            proj_name = matches[0]["name"]
-            st.session_state.sales_data["project_opportunity"]["project_name"] = proj_name
-            add_ai_message(get_ui_text("project_locked_feedback", project_name=proj_name).format(project_name=proj_name))
-            st.session_state.step = "missing_fields_start"; handle_logic("confirm_fix")
-        else:
-            st.session_state.search_matches = matches
-            st.session_state.step = "select_project"
-            m_list = "\n".join([f"{i+1}. {m['name']} (负责人: {m['sales_rep']})" for i, m in enumerate(matches)])
-            add_ai_message(get_ui_text("multiple_matches_found", matches_list=m_list).format(matches_list=m_list))
-
-    elif st.session_state.step == "select_project":
-        matches = st.session_state.get("search_matches", [])
-        sel_name = None
-        if prompt.isdigit():
-            idx = int(prompt) - 1
-            if 0 <= idx < len(matches): sel_name = matches[idx]["name"]
-        if not sel_name:
-            for m in matches:
-                if prompt == m["name"]: sel_name = m["name"]; break
-        if sel_name:
-            st.session_state.sales_data["project_opportunity"]["project_name"] = sel_name
-            add_ai_message(get_ui_text("project_locked_feedback", project_name=sel_name).format(project_name=sel_name))
-            st.session_state.step = "missing_fields_start"; handle_logic("confirm_fix")
-        else: add_ai_message("抱歉，我没对上号。请重新输入数字编号或项目全名。")
-
+            st.session_state.step = "missing_fields_start"
+            add_ai_message("好的，我已为您提取了关键信息。有需要补充或修改的地方吗？")
+        
+        elif intent == "LIST":
+            # 列表查询 - 直接使用提取的内容作为搜索词
+            search_term = extracted_content.strip() if extracted_content else ""
+            clean_term = search_term.upper().replace("`", "").replace("'", "").replace('"', "")
+            
+            is_full_list = clean_term in ["ALL", "未知", "UNKNOWN"] or not clean_term or clean_term in ["商机", "项目", "单子", "列表", "全部", "所有"]
+            
+            with st.spinner("正在检索商机..."):
+                if is_full_list:
+                    results = st.session_state.controller.list_opportunities()
+                else:
+                    def simple_filter(data):
+                        dump_str = json.dumps(data, ensure_ascii=False)
+                        return search_term.lower() in dump_str.lower()
+                    results = st.session_state.controller.list_opportunities(simple_filter)
+            
+            if results:
+                add_ai_message(f"📋 找到 {len(results)} 条商机")
+                for opp in results:
+                    pname = opp.get("project_opportunity", {}).get("project_name", "未知")
+                    stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
+                    stage_name = st.session_state.controller.stage_map.get(stage_code, stage_code)
+                    sales = opp.get("sales_rep", "-")
+                    add_ai_message(f"- **{pname}** | 阶段: {stage_name} | 销售: {sales}")
+            else:
+                add_ai_message("暂未找到相关商机。")
+        
+        elif intent == "GET":
+            # 查看详情 - 直接使用提取的内容作为搜索词
+            search_term = extracted_content.strip() if extracted_content else prompt
+            
+            with st.spinner("正在定位商机..."):
+                candidates = st.session_state.controller.find_potential_matches(search_term)
+            
+            if not candidates:
+                add_ai_message(f"未找到与 '{search_term}' 相关的商机。")
+            elif len(candidates) == 1:
+                target = st.session_state.controller.get_opportunity_by_id(candidates[0]["id"])
+                if target:
+                    add_ai_message(f"已为您找到：**{target.get('project_opportunity', {}).get('project_name')}**")
+                    add_report_message(target)
+            else:
+                st.session_state.search_candidates = candidates
+                st.session_state.step = "select_result"
+                msg = "找到多个相关商机，请选择：\n"
+                for i, cand in enumerate(candidates):
+                    msg += f"\n{i+1}. {cand['name']}"
+                add_ai_message(msg)
+        
+        elif intent == "UPDATE":
+            # 修改商机 - 直接使用提取的内容作为搜索词
+            search_term = extracted_content.strip() if extracted_content else prompt
+            
+            with st.spinner("正在定位商机..."):
+                candidates = st.session_state.controller.find_potential_matches(search_term)
+            
+            if not candidates:
+                add_ai_message(f"未找到与 '{search_term}' 相关的商机。")
+            elif len(candidates) == 1:
+                target = st.session_state.controller.get_opportunity_by_id(candidates[0]["id"])
+                if target:
+                    st.session_state.sales_data = target
+                    add_ai_message(f"已为您锁定项目：**{target.get('project_opportunity', {}).get('project_name')}**")
+                    add_report_message(target)
+                    st.session_state.step = "review"
+                    add_ai_message("有什么需要调整的地方吗？")
+            else:
+                st.session_state.search_candidates = candidates
+                st.session_state.step = "select_result"
+                msg = "找到多个相关商机，请选择要修改的项目：\n"
+                for i, cand in enumerate(candidates):
+                    msg += f"\n{i+1}. {cand['name']}"
+                add_ai_message(msg)
+        
+        elif intent == "DELETE":
+            # 删除商机 - 直接使用提取的内容作为搜索词
+            search_term = extracted_content.strip() if extracted_content else prompt
+            
+            with st.spinner("正在定位商机..."):
+                candidates = st.session_state.controller.find_potential_matches(search_term)
+            
+            if not candidates:
+                add_ai_message(f"未找到与 '{search_term}' 相关的商机。")
+            elif len(candidates) == 1:
+                target = st.session_state.controller.get_opportunity_by_id(candidates[0]["id"])
+                if target:
+                    st.session_state.sales_data = target
+                    add_ai_message(f"确认删除项目：**{target.get('project_opportunity', {}).get('project_name')}** 吗？(输入 '确认' 或 '是' 来删除)")
+                    st.session_state.step = "confirm_delete"
+            else:
+                st.session_state.search_candidates = candidates
+                st.session_state.step = "select_delete"
+                msg = "找到多个相关商机，请选择要删除的项目：\n"
+                for i, cand in enumerate(candidates):
+                    msg += f"\n{i+1}. {cand['name']}"
+                add_ai_message(msg)
+        
+        elif intent == "OTHER":
+            # 非业务请求 - 使用秘书语气拒绝
+            add_ai_message(get_ui_text("intent_other_hint", "抱歉，这不在我的业务范围内。请问有关于销售或商机的问题吗？"))
+    
     elif st.session_state.step == "missing_fields_start":
         missing_map = st.session_state.controller.get_missing_fields(st.session_state.sales_data)
         if missing_map:
@@ -364,6 +407,7 @@ def handle_logic(prompt):
             else:
                 st.session_state.step = "review"
                 add_ai_message(f"{prefix} 核对完毕！确认无误请点击下方 **'确认保存'**。")
+    
     elif st.session_state.step == "review":
         with st.spinner("修改中..."):
             st.session_state.sales_data = st.session_state.controller.update(st.session_state.sales_data, prompt)
@@ -397,15 +441,6 @@ with st.container():
         with c2:
             if st.button("❌ 放弃", use_container_width=True):
                 add_ai_message(f"{get_ui_text('operation_cancel', '已放弃。')} {get_ui_text('greeting', '有什么需要帮忙的么？')}"); reset_state()
-            
-    elif st.session_state.step in ["search_project", "select_project"]:
-        c1, c2, _ = st.columns([1, 1, 4])
-        with c1:
-            if st.button("➕ 新建商机", type="primary", use_container_width=True):
-                st.session_state.step = "missing_fields_start"; handle_logic("init_new"); st.rerun()
-        with c2:
-            if st.button("❌ 取消", use_container_width=True):
-                add_ai_message(f"{get_ui_text('operation_cancel', '已取消。')} {get_ui_text('greeting', '有什么需要帮忙的么？')}"); reset_state()
 
     c_plus, c_in, c_mic, c_send = st.columns([0.8, 7.2, 0.8, 1.2])
     with c_plus:

@@ -174,9 +174,10 @@ def summarize_text(content: str, api_key: str, endpoint_id: str) -> str:
         # 如果报错，截断返回
         return content[:500] + "..."
 
-def classify_intent(text: str, api_key: str, endpoint_id: str) -> str:
+def classify_intent(text: str, api_key: str, endpoint_id: str) -> dict:
     """
-    判断用户的意图：CREATE, LIST, GET, UPDATE, DELETE, 或 OTHER。
+    判断用户的意图并提取内容，返回 {"intent": "...", "content": "..."}。
+    意图可以是：CREATE, LIST, GET, UPDATE, DELETE, 或 OTHER。
     """
     client = Ark(api_key=api_key)
     system_prompt = load_prompt("classify_intent")
@@ -190,11 +191,33 @@ def classify_intent(text: str, api_key: str, endpoint_id: str) -> str:
             ],
             temperature=0.1, 
         )
-        # 直接返回 LLM 输出的关键词，由 Controller 负责后续的规范化和分发
-        content = completion.choices[0].message.content.strip().upper()
-        return content
-    except:
-        return "CREATE" # 默认走创建/录入逻辑比较保险
+        # LLM 应该返回 JSON 格式
+        response = completion.choices[0].message.content.strip()
+        
+        # 尝试解析 JSON
+        try:
+            result = json.loads(response)
+            # 确保意图是大写
+            if isinstance(result, dict):
+                intent = result.get("intent", "CREATE").upper()
+                content = result.get("content", text)
+                return {"intent": intent, "content": content}
+        except:
+            pass
+        
+        # 如果 JSON 解析失败，尝试从纯文本提取
+        response_upper = response.upper()
+        intent = "CREATE"  # 默认值
+        for keyword in ["CREATE", "LIST", "GET", "UPDATE", "DELETE", "OTHER"]:
+            if keyword in response_upper:
+                intent = keyword
+                break
+        
+        return {"intent": intent, "content": text}
+        
+    except Exception as e:
+        # 默认走创建/录入逻辑比较保险
+        return {"intent": "CREATE", "content": text}
 
 def query_sales_data(query: str, history_data: list, api_key: str, endpoint_id: str) -> str:
     """
