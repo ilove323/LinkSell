@@ -1,0 +1,5 @@
+typer
+rich
+volcengine-python-sdk
+httpx
+configparser

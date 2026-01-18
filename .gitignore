@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.swp
+*.bak
+
+# Configuration (CRITICAL: Protect your keys!)
+config/config.ini
+
+# Data & Temp files
+data/*
+!data/.gitkeep
+temp/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
