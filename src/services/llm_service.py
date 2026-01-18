@@ -15,7 +15,7 @@ def load_prompt(prompt_name: str) -> str:
 
 def analyze_text(content: str, api_key: str, endpoint_id: str):
     """
-    调用豆包大模型，提炼销售内容
+    调用 AI 大模型，提炼销售内容
     """
     # 初始化客户端
     client = Ark(api_key=api_key)
@@ -27,7 +27,7 @@ def analyze_text(content: str, api_key: str, endpoint_id: str):
         print(f"[ERROR] 提示词加载失败: {e}")
         return None
 
-    print("正在连接豆包大模型...")
+    print("正在连接 AI 大模型...")
     
     try:
         completion = client.chat.completions.create(
@@ -55,5 +55,5 @@ def analyze_text(content: str, api_key: str, endpoint_id: str):
         print(f"解析失败，模型返回的不是标准 JSON: {response_content}")
         return None
     except Exception as e:
-        print(f"调用豆包出错了: {e}")
+        print(f"调用 AI 出错了: {e}")
         return None
