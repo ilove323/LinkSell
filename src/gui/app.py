@@ -4,6 +4,7 @@ import time
 import json
 import copy
 from pathlib import Path
+import streamlit.components.v1 as components
 
 # Add project root to path so we can import src
 root = Path(__file__).parent.parent.parent
@@ -13,6 +14,14 @@ from src.core.controller import LinkSellController
 
 # --- Page Config ---
 st.set_page_config(page_title="LinkSell 智能销售助手", page_icon="💼", layout="wide")
+
+# --- Header ---
+logo_path = Path("assents/icon/comlan.png")
+col_logo, col_title = st.columns([1, 6])
+with col_logo:
+    if logo_path.exists(): st.image(str(logo_path), width=120)
+with col_title:
+    st.title("LinkSell 智能销售助手")
 
 # --- Styles ---
 st.markdown("""
@@ -27,9 +36,24 @@ st.markdown("""
     .stChatMessage {
         padding: 10px;
     }
-    /* Hide the default chat input padding if any */
-    [data-testid="stChatInput"] {
-        display: none;
+    .stTextArea textarea {
+        border-radius: 10px;
+    }
+    /* 极致修剪语音按钮：确保只漏出麦克风图标 */
+    [data-testid="stAudioInput"] {
+        max-width: 100px !important;
+        min-width: 100px !important;
+        overflow: hidden !important;
+        background: transparent !important;
+        border: none !important;
+    }
+    /* 隐藏所有多余的控制面板、计时器、播放器 */
+    [data-testid="stAudioInput"] section, 
+    [data-testid="stAudioInput"] div[data-testid="stMarkdownContainer"],
+    [data-testid="stAudioInput"] div[aria-label="Audio waveform"],
+    [data-testid="stAudioInput"] button[aria-label="Play"],
+    [data-testid="stAudioInput"] div:has(> button[aria-label="Play"]) {
+        display: none !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -49,13 +73,54 @@ if "sales_data" not in st.session_state:
     st.session_state.sales_data = None
 
 if "step" not in st.session_state:
-    st.session_state.step = "input" # input, missing_fields, review
+    st.session_state.step = "input"
 
 if "missing_fields_queue" not in st.session_state:
     st.session_state.missing_fields_queue = []
 
-if "text_input_val" not in st.session_state:
-    st.session_state.text_input_val = ""
+# Initialize text area state
+if "chat_input_area" not in st.session_state:
+    st.session_state["chat_input_area"] = ""
+
+# --- TOP-LEVEL LOGIC (BEFORE UI RENDERING) ---
+
+# 1. Handle Mic Result (Sync text to input area)
+if "mic_input" in st.session_state and st.session_state.mic_input:
+    audio_data = st.session_state.mic_input
+    # Generate a unique key for this audio clip
+    audio_id = hash(audio_data.getvalue())
+    if st.session_state.get("last_processed_audio") != audio_id:
+        tmp_path = Path(f"data/tmp/mic_{int(time.time())}.wav")
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp_path, "wb") as _f: _f.write(audio_data.getbuffer())
+        try:
+            text = st.session_state.controller.transcribe(tmp_path)
+            if text:
+                # Direct injection into the widget's state
+                st.session_state["chat_input_area"] = text
+                st.session_state["last_processed_audio"] = audio_id
+                st.rerun()
+        except: pass
+
+# 2. Handle File Upload Result
+if st.session_state.get("transcribing") and st.session_state.get("transcribe_path"):
+    path = st.session_state.pop("transcribe_path")
+    st.session_state.pop("transcribing")
+    try:
+        text = st.session_state.controller.transcribe(path)
+        if text:
+            st.session_state["chat_input_area"] = text
+            st.rerun()
+    except: pass
+
+# 3. Handle Logical Submission (Triggered by Button)
+if st.session_state.get("final_send_btn"):
+    prompt = st.session_state.get("chat_input_area", "").strip()
+    if prompt:
+        # Clear box and queue logic
+        st.session_state["chat_input_area"] = "" 
+        st.session_state["submit_trigger"] = prompt
+        st.rerun()
 
 # --- Helper Functions ---
 
@@ -142,15 +207,18 @@ def reset_state():
     st.session_state.sales_data = None
     st.session_state.step = "input"
     st.session_state.missing_fields_queue = []
+    st.session_state["chat_input_area"] = ""
     st.session_state.messages = [{"role": "assistant", "content": "你好！我是您的销售助手。请上传录音文件或直接粘贴对话文本，我来帮您整理。"}]
     st.rerun()
 
 def handle_logic(prompt):
     """Unified logic handler for user input."""
-    if not prompt or not prompt.strip(): return
-
+    if not prompt: return
     if st.session_state.step == "input":
-        with st.spinner("正在润色并分析..."):
+        if not st.session_state.controller.check_is_sales(prompt):
+            add_ai_message("我只是一个销售助手, 不理解您的问题, 请上传录音文件或直接粘贴对话文本，我来帮您整理。")
+            return
+        with st.spinner("分析中..."):
             polished = st.session_state.controller.polish(prompt)
             data = st.session_state.controller.analyze(polished)
             st.session_state.sales_data = data
@@ -163,133 +231,98 @@ def handle_logic(prompt):
                 add_ai_message(f"我注意到 **{name}** 还没填，需要补充吗？(没有请回 '无')")
             else:
                 st.session_state.step = "review"
-                add_ai_message("分析完成！请查阅上方的销售小纪。有需要修改的吗？(无误请点击下方按钮保存)")
-
+                add_ai_message("分析完成！确认无误请点击下方按钮保存。")
     elif st.session_state.step == "missing_fields":
         if st.session_state.missing_fields_queue:
             curr_key, (curr_name, _) = st.session_state.missing_fields_queue[0]
-            user_input = prompt.strip()
-            is_skip = user_input in ["无", "没有", "跳过", "不知", "不知道"]
-            if not is_skip:
-                with st.spinner(f"正在写入 {curr_name}..."):
-                    st.session_state.sales_data = st.session_state.controller.refine(st.session_state.sales_data, {curr_key: prompt})
+            if prompt.strip() not in ["无", "没有", "跳过"]:
+                st.session_state.sales_data = st.session_state.controller.refine(st.session_state.sales_data, {curr_key: prompt})
                 feedback_prefix = f"✅ 已补充 **{curr_name}**。"
                 add_report_message(st.session_state.sales_data)
             else: feedback_prefix = "👌 已跳过。"
             st.session_state.missing_fields_queue.pop(0)
             if st.session_state.missing_fields_queue:
                 next_key, (next_name, _) = st.session_state.missing_fields_queue[0]
-                add_ai_message(f"{feedback_prefix} 另外，我注意到 **{next_name}** 也没填，需要补充吗？(没有请回 '无')")
+                add_ai_message(f"{feedback_prefix} 另外，我注意到 **{next_name}** 也没填，需要补充吗？")
             else:
                 st.session_state.step = "review"
-                add_ai_message(f"{feedback_prefix} 核对完毕！请查看报表。确认无误请点击 **'确认保存'**，或告诉我修改意见。")
-
+                add_ai_message(f"{feedback_prefix} 核对完毕！确认无误请点击下方 **'确认保存'**。")
     elif st.session_state.step == "review":
-        with st.spinner("正在修改..."):
+        with st.spinner("修改中..."):
             st.session_state.sales_data = st.session_state.controller.update(st.session_state.sales_data, prompt)
             add_report_message(st.session_state.sales_data)
-            add_ai_message("修改完成，请查看结果。确认无误请点击 **'确认保存'**。")
+            add_ai_message("修改完成。确认无误请点击 **'确认保存'**。")
+
+# Logic trigger handling
+if "submit_trigger" in st.session_state:
+    p = st.session_state.pop("submit_trigger")
+    add_user_message(p)
+    handle_logic(p)
 
 # --- Header ---
 logo_path = Path("assents/icon/comlan.png")
 col_logo, col_title = st.columns([1, 6])
 with col_logo:
     if logo_path.exists(): st.image(str(logo_path), width=120)
-with col_title: st.title("LinkSell 智能销售助手")
+with col_title:
+    st.title("LinkSell 智能销售助手")
 
 # --- Chat History ---
 display_chat()
 
-# --- BOTTOM UI: Save Buttons (Conditional) ---
-if st.session_state.step == "review":
-    with st.container():
-        b1, b2, b3 = st.columns([1, 1, 4])
-        with b1:
-            if st.button("✅ 确认保存", type="primary", use_container_width=True):
-                with st.spinner("存档中..."):
-                    rid, _ = st.session_state.controller.save(st.session_state.sales_data)
-                    st.toast(f"保存成功！ID: {rid}")
-                    time.sleep(1)
-                    reset_state()
-        with b2:
-            if st.button("❌ 放弃", use_container_width=True):
-                reset_state()
-        with b3: st.caption("👆 请确认保存，或在下方输入修改意见")
-
-# --- BOTTOM UI: Unified Input Bar ---
+# --- BOTTOM UI ---
 with st.container():
-    # Adjusted widths to give audio_input enough room [Upload, Text, Mic, Send]
-    col_plus, col_input, col_mic, col_send = st.columns([0.8, 6.0, 2.0, 1.2])
-    
-    with col_plus:
-        pop_up = st.popover("➕", use_container_width=True, help="上传音频文件")
-        with pop_up:
-            st.markdown("##### 📁 上传音频文件")
-            f = st.file_uploader("选择文件", type=["wav", "mp3"], label_visibility="collapsed")
-            if f:
-                if st.button("🚀 识别并填入", type="primary", use_container_width=True):
-                    tmp = Path(f"data/tmp/{f.name}")
-                    tmp.parent.mkdir(parents=True, exist_ok=True)
-                    with open(tmp, "wb") as _f: _f.write(f.getbuffer())
-                    st.session_state.transcribe_path = tmp
-                    st.session_state.transcribing = True
-                    st.rerun()
+    if st.session_state.step == "review":
+        rb1, rb2, _ = st.columns([1, 1, 4])
+        with rb1:
+            if st.button("✅ 确认保存", type="primary", use_container_width=True):
+                rid, _ = st.session_state.controller.save(st.session_state.sales_data)
+                st.toast(f"保存成功！ID: {rid}"); time.sleep(1); reset_state()
+        with rb2:
+            if st.button("❌ 放弃", use_container_width=True): reset_state()
 
-    with col_input:
-        # Use session_state to allow both manual typing and ASR filling
-        user_text = st.text_input(
-            "对话框", 
-            value=st.session_state.get("text_input_val", ""),
-            placeholder="输入内容或修改意见...", 
-            label_visibility="collapsed",
-            key="main_text_input"
-        )
-        # Update the state if user types manually
-        st.session_state.text_input_val = user_text
+    # Unified Bar
+    c_plus, c_in, c_mic, c_send = st.columns([0.8, 7.2, 0.8, 1.2])
+    with c_plus:
+        pop = st.popover("➕", use_container_width=True)
+        with pop:
+            f = st.file_uploader("音频", type=["wav", "mp3"], label_visibility="collapsed")
+            if f and st.button("🚀 识别并填入", key="up_f", type="primary"):
+                tmp = Path(f"data/tmp/{f.name}"); tmp.parent.mkdir(parents=True, exist_ok=True)
+                with open(tmp, "wb") as _f: _f.write(f.getbuffer())
+                st.session_state.transcribe_path = tmp; st.session_state.transcribing = True; st.rerun()
+    with c_in:
+        # Standard key binding
+        st.text_area("输入框", placeholder="输入或修改...", label_visibility="collapsed", key="chat_input_area", height=68)
+    with c_mic:
+        st.audio_input("录音", label_visibility="collapsed", key="mic_input")
+    with c_send:
+        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+        st.button("🚀", type="primary", use_container_width=True, key="final_send_btn")
 
-    with col_mic:
-        # Direct audio input without popover
-        audio_data = st.audio_input("录音", label_visibility="collapsed", key="mic_input")
-        if audio_data:
-            # We use a hash or timestamp to avoid re-transcribing the same audio on every rerun
-            audio_id = hash(audio_data.getvalue())
-            if st.session_state.get("last_audio_id") != audio_id:
-                with st.spinner("🎧"):
-                    tmp = Path(f"data/tmp/mic_{int(time.time())}.wav")
-                    tmp.parent.mkdir(parents=True, exist_ok=True)
-                    with open(tmp, "wb") as _f: _f.write(audio_data.getbuffer())
-                    
-                    try:
-                        text = st.session_state.controller.transcribe(tmp)
-                        if text:
-                            st.session_state.text_input_val = text
-                            st.session_state.last_audio_id = audio_id
-                            st.rerun()
-                    except Exception as e:
-                        st.error(f"识别失败: {e}")
+# JS for Enter/Ctrl+Enter
+components.html("""
+<script>
+const doc = window.parent.document;
+function setupInput() {
+    const textarea = doc.querySelector('textarea');
+    const buttons = Array.from(doc.querySelectorAll('button'));
+    const send_btn = buttons.find(b => b.innerText.includes("🚀"));
 
-    with col_send:
-        send_clicked = st.button("🚀", type="primary", use_container_width=True, help="发送文字")
-
-    # Handle text submission
-    if send_clicked and st.session_state.text_input_val:
-        final_prompt = st.session_state.text_input_val
-        add_user_message(final_prompt)
-        handle_logic(final_prompt)
-        # Clear state after sending
-        st.session_state.text_input_val = ""
-        st.rerun()
-
-# --- Handle Background Transcription ---
-if st.session_state.get("transcribing"):
-    path = st.session_state.pop("transcribe_path")
-    st.session_state.pop("transcribing")
-    with st.spinner("正在转写..."):
-        try:
-            text = st.session_state.controller.transcribe(path)
-            if text:
-                add_user_message(f"【语音内容】: {text}")
-                handle_logic(text)
-                st.rerun()
-            else: st.error("语音识别失败")
-        except Exception as e: st.error(f"Error: {e}")
+    if (textarea && send_btn && !textarea.dataset.hookAttached) {
+        textarea.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                    // Do nothing, let the browser insert a newline
+                } else {
+                    // Prevent newline and click send
+                    e.preventDefault();
+                    send_btn.click();
+                }
+            }
+        });
+        textarea.dataset.hookAttached = "true";
+    }
+}
+setInterval(setupInput, 1000);
+</script>""", height=0)

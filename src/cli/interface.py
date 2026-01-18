@@ -135,6 +135,12 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
 
     if not content: content = typer.prompt("请输入内容")
 
+    # 新增：意图防火墙
+    with console.status("[bold yellow]正在核实内容意图...", spinner="dots"):
+        if not controller.check_is_sales(content):
+            console.print("[bold red]提示：[/bold red]我只是一个销售助手, 不理解您的问题, 请上传录音文件或直接粘贴对话文本，我来帮您整理。")
+            return
+
     console.print(Panel(f"[bold cyan]{get_random_ui('polishing_start')}[/bold cyan]", style="cyan"))
     content = controller.polish(content)
     console.print(Panel(content, title="[bold green]整理后的文本[/bold green]"))

@@ -3,7 +3,7 @@ import json
 import datetime
 import re
 from pathlib import Path
-from src.services.llm_service import analyze_text, refine_sales_data, polish_text, update_sales_data
+from src.services.llm_service import analyze_text, refine_sales_data, polish_text, update_sales_data, is_sales_content
 from src.services.asr_service import transcribe_audio
 
 class LinkSellController:
@@ -43,6 +43,12 @@ class LinkSellController:
         if not self.validate_llm_config():
             raise ValueError("LLM Configuration Invalid")
         return analyze_text(text, self.api_key, self.endpoint_id)
+
+    def check_is_sales(self, text):
+        """判断内容是否为销售相关。"""
+        if not self.validate_llm_config():
+            return True
+        return is_sales_content(text, self.api_key, self.endpoint_id)
 
     def get_missing_fields(self, data):
         """
@@ -119,10 +125,11 @@ class LinkSellController:
         proj_name = record.get("project_opportunity", {}).get("project_name", "未命名项目")
         if not proj_name: proj_name = "未命名项目"
         
-        safe_proj_name = re.sub(r'[\\/*?:",<>|]', "", proj_name).strip().replace(" ", "_")
+        safe_proj_name = re.sub(r'[\\/*?:\",<>|]', "", proj_name).strip().replace(" ", "_")
         time_str = now.strftime("%Y%m%d_%H%M%S")
         filename = f"{safe_proj_name}-{time_str}.json"
         
+        # 确保目录存在
         records_dir = data_file_path.parent / "records"
         records_dir.mkdir(parents=True, exist_ok=True)
         record_path = records_dir / filename
