@@ -267,5 +267,38 @@ def update_sales_data(original_data: dict, user_instruction: str, api_key: str, 
         print(f"[bold red]数据修改服务调用失败：{e}[/bold red]")
         return original_data
 
+def judge_affirmative(user_input: str, api_key: str, endpoint_id: str) -> bool:
+    """
+    使用 LLM 判断用户的输入是否表达了“肯定/同意”的意图。
+    用于确认保存等操作。
+    """
+    # 极简模式，直接走 API，不加载额外 prompt 文件
+    client = Ark(api_key=api_key)
+    
+    system_prompt = (
+        "你是一个意图判断助手。系统询问用户：'是否保存这条记录？'。\n"
+        "请判断用户的回答是否表示【同意/确认/保存/正面肯定】。\n"
+        "如果是（例如：'好'、'可以'、'存吧'、'没问题'、'嗯'、'妥了'），请返回 TRUE。\n"
+        "如果否（例如：'不'、'取消'、'等会儿'、'还没'），或回答无关，请返回 FALSE。\n"
+        "请仅返回 TRUE 或 FALSE，不要包含其他内容。"
+    )
+
+    try:
+        completion = client.chat.completions.create(
+            model=endpoint_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_input},
+            ],
+            temperature=0.1, 
+        )
+        
+        content = completion.choices[0].message.content.strip().upper()
+        return "TRUE" in content
+
+    except Exception as e:
+        # 出错时为了安全起见，默认返回 False，让用户重试或走 explicit 流程
+        return False
+
 
 

@@ -18,7 +18,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 # 导入业务服务模块
 try:
-    from src.services.llm_service import analyze_text, refine_sales_data, polish_text, update_sales_data
+    from src.services.llm_service import analyze_text, refine_sales_data, polish_text, update_sales_data, judge_affirmative
     from src.services.asr_service import transcribe_audio
 except ImportError:
     pass
@@ -102,7 +102,7 @@ def display_result_human_readable(data: dict):
     以人类可读的格式（Rich 表格和树状图）展示分析结果。
     """
     # 1. 基础信息表
-    table = Table(title="[bold green]📊 销售记录分析报告[/bold green]", show_header=False, box=None)
+    table = Table(title="[bold green]📊 销售小纪[/bold green]", show_header=False, box=None)
     table.add_column("Key", style="bold cyan")
     table.add_column("Value")
 
@@ -447,6 +447,10 @@ def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼
             result = check_and_fill_missing_fields(result, api_key, endpoint_id)
             # ========================
 
+            # 定义肯否定词库
+            affirmative_keywords = ["是", "需要", "yes", "y", "对", "ok", "好的", "好", "可以", "行", "没问题", "嗯", "恩", "妥", "存"]
+            negative_keywords = ["否", "不", "no", "n", "没", "不需要", "不用", "取消", "别"]
+
             while True:
                 # 展示结果
                 display_result_human_readable(result)
@@ -458,42 +462,62 @@ def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼
                     console.print(f"[bold blue]{msg}[/bold blue]")
                     break
 
-                # 交互式菜单
-                choice = typer.prompt(
-                    "请选择操作：(s:保存 / d:丢弃 / m:修改)", 
-                    default="s", 
-                    show_default=False
-                ).lower()
+                # 1. 询问是否需要修改
+                ask_mod_text = get_random_ui("ask_modification")
+                user_input = typer.prompt(ask_mod_text, default="", show_default=False).strip()
+                
+                if not user_input:
+                    continue # 空输入重试
 
-                if choice == 's':
-                    record_id = save_to_db(result)
-                    msg = get_random_ui("db_save_success", record_id=record_id)
-                    console.print(f"[bold blue]{msg}[/bold blue]")
-                    break
-                elif choice == 'd':
-                    msg = get_random_ui("operation_cancel")
-                    console.print(f"[dim]{msg}[/dim]")
-                    break
-                elif choice == 'm':
-                    # 对话式修改模式
+                lower_input = user_input.lower()
+                
+                # 情况 A: 用户明确说 "不修改" -> 进入保存流程
+                if any(kw in lower_input for kw in negative_keywords) and len(lower_input) < 10:
+                    ask_save_text = get_random_ui("ask_save")
+                    save_input = typer.prompt(ask_save_text, default="y", show_default=False).strip().lower()
+                    
+                    # 1. 本地快速判断
+                    if save_input == "" or any(kw in save_input for kw in affirmative_keywords):
+                        is_agree = True
+                    elif any(kw in save_input for kw in negative_keywords):
+                        is_agree = False
+                    else:
+                        # 2. 调用 LLM 深度判断意图
+                        console.print("[dim]正在确认您的意图...[/dim]")
+                        is_agree = judge_affirmative(save_input, api_key, endpoint_id)
+
+                    if is_agree:
+                        record_id = save_to_db(result)
+                        msg = get_random_ui("db_save_success", record_id=record_id)
+                        console.print(f"[bold blue]{msg}[/bold blue]")
+                        break
+                    else:
+                        msg = get_random_ui("operation_cancel")
+                        console.print(f"[dim]{msg}[/dim]")
+                        break
+                
+                # 情况 B: 用户明确说 "需要修改" -> 进一步询问具体内容
+                elif any(kw in lower_input for kw in affirmative_keywords) and len(lower_input) < 5:
                     msg = get_random_ui("modification_ask")
                     user_instruction = typer.prompt(msg)
                     
                     if user_instruction and user_instruction.strip():
                         msg = get_random_ui("modification_processing")
                         console.print(f"[blue]{msg}[/blue]")
-                        
-                        # 调用 AI 进行数据修订
                         result = update_sales_data(result, user_instruction, api_key, endpoint_id)
-                        
                         msg = get_random_ui("modification_success")
                         console.print(f"[green]{msg}[/green]")
                     else:
                         msg = get_random_ui("no_changes")
                         console.print(f"[dim]{msg}[/dim]")
+                
+                # 情况 C: 用户直接输入了修改指令 (例如 "把预算改成50万")
                 else:
-                    msg = get_random_ui("invalid_input")
-                    console.print(f"[red]{msg}[/red]")
+                    msg = get_random_ui("modification_processing")
+                    console.print(f"[blue]{msg}[/blue]")
+                    result = update_sales_data(result, user_input, api_key, endpoint_id)
+                    msg = get_random_ui("modification_success")
+                    console.print(f"[green]{msg}[/green]")
 
         else:
             console.print("[red]错误：AI 服务未返回有效响应。[/red]")
