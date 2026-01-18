@@ -3,28 +3,42 @@ import os
 from pathlib import Path
 from volcenginesdkarkruntime import Ark
 
-def load_prompt(prompt_name: str) -> str:
+def load_prompt(prompt_name: str, fallback: str = None) -> str:
     """
     从 config/prompts 目录加载提示词
+    支持 fallback 机制：如果主文件不存在，尝试使用备选文件
     """
     # 允许传入带有 .txt 后缀或不带后缀的文件名
     if not prompt_name.endswith(".txt"):
         prompt_name += ".txt"
         
     prompt_path = Path("config") / "prompts" / prompt_name
-    if not prompt_path.exists():
-        # 这里给出一个硬核的报错，提醒开发者必须创建文件
-        raise FileNotFoundError(f"【架构禁忌】: 严禁在代码中硬编码 Prompt！请创建文件: {prompt_path}")
     
-    with open(prompt_path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+    # 如果主文件存在，直接使用
+    if prompt_path.exists():
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    
+    # 如果指定了 fallback，尝试使用 fallback
+    if fallback:
+        if not fallback.endswith(".txt"):
+            fallback += ".txt"
+        fallback_path = Path("config") / "prompts" / fallback
+        if fallback_path.exists():
+            with open(fallback_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+    
+    # 两个都找不到，抛出错误
+    raise FileNotFoundError(f"【架构禁忌】: 严禁在代码中硬编码 Prompt！请创建文件: {prompt_path}" + 
+                           (f" 或 fallback {fallback_path}" if fallback else ""))
 
 def analyze_text(content: str, api_key: str, endpoint_id: str):
     """
     调用火山引擎 Ark Runtime (Doubao) 分析文本。
+    使用 create_sales.txt prompt 将文本转换为结构化 JSON。
     """
     client = Ark(api_key=api_key)
-    system_prompt = load_prompt("analyze_sales")
+    system_prompt = load_prompt("create_sales", fallback="analyze_sales")  # 支持 fallback 兼容
 
     try:
         completion = client.chat.completions.create(

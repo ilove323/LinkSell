@@ -296,6 +296,15 @@ class LinkSellController:
         return refine_sales_data(data, supplements, self.api_key, self.endpoint_id)
 
     def update(self, data, instruction):
+        """
+        UPDATE 流程：修改商机数据
+        
+        关键逻辑：
+        1. 调用 LLM 修改 JSON
+        2. 同步 project_name 字段
+        3. 保留元数据
+        4. **[原子操作]** 如果修改了商机名称，自动处理文件重命名 + 向量库更新
+        """
         updated_data = update_sales_data(data, instruction, self.api_key, self.endpoint_id)
         
         # --- 强一致性同步逻辑 ---
@@ -318,6 +327,48 @@ class LinkSellController:
         for k in meta_keys:
             if k in data and k not in updated_data:
                 updated_data[k] = data[k]
+        
+        # --- [原子操作]：如果修改了商机名称，处理文件重命名 + 向量库更新 ---
+        old_proj_name = data.get("project_opportunity", {}).get("project_name")
+        new_proj_name = updated_data.get("project_opportunity", {}).get("project_name")
+        
+        # 检测：商机名称是否真的改变了
+        if old_proj_name and new_proj_name and old_proj_name != new_proj_name:
+            old_file_path = Path(data.get("_file_path", ""))
+            new_file_path = self._get_safe_filename(new_proj_name)
+            
+            # 只有当新文件名与旧文件名不同时，才执行重命名
+            if old_file_path.resolve() != new_file_path.resolve():
+                try:
+                    # 1. 准备保存数据（清理临时字段）
+                    save_data = updated_data.copy()
+                    save_data.pop("_temp_id", None)
+                    save_data.pop("_file_path", None)
+                    save_data["updated_at"] = datetime.datetime.now().isoformat()
+                    
+                    # 2. 写入新文件
+                    new_file_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(new_file_path, "w", encoding="utf-8") as f:
+                        json.dump(save_data, f, ensure_ascii=False, indent=2)
+                    
+                    # 3. 删除旧文件（如果存在且不同）
+                    if old_file_path.exists():
+                        os.remove(old_file_path)
+                    
+                    # 4. 向量库同步 (ID 保持不变，内容覆盖)
+                    if self.vector_service:
+                        real_id = updated_data.get("id")
+                        if real_id:
+                            self.vector_service.delete_record(real_id)  # 删除旧记录
+                            self.vector_service.add_record(real_id, save_data)  # 添加新记录
+                    
+                    # 5. 更新元数据中的文件路径
+                    updated_data["_file_path"] = str(new_file_path)
+                    
+                except Exception as e:
+                    print(f"⚠️ 商机名称重命名失败: {e}")
+                    # 如果重命名失败，返回更新后的数据但标记错误
+                    # 用户可以手动处理或重新尝试
             
         return updated_data
 
@@ -427,6 +478,65 @@ class LinkSellController:
                 return item
                 
         return None
+
+    def query(self, sales_data, query_text: str):
+        """
+        GET/LIST: 根据销售数据和查询问题，生成专业回答
+        
+        Args:
+            sales_data: 单个商机 JSON 或商机列表
+            query_text: 用户的查询问题（从 extracted_content 获取）
+            
+        Returns:
+            纯文本答案
+        """
+        if not self.validate_llm_config():
+            return "配置错误，无法查询。"
+        
+        # 将 sales_data 转换为列表（便于统一处理）
+        if isinstance(sales_data, dict):
+            history_data = [sales_data]
+        else:
+            history_data = sales_data if isinstance(sales_data, list) else []
+        
+        return query_sales_data(query_text, history_data, self.api_key, self.endpoint_id)
+
+    def generate_delete_warning(self, sales_data: dict) -> str:
+        """
+        DELETE: 在删除前生成友好但严肃的二次确认提示
+        
+        Args:
+            sales_data: 要删除的商机 JSON
+            
+        Returns:
+            纯文本的删除确认提示
+        """
+        if not self.validate_llm_config():
+            # fallback: 直接返回基础提示
+            proj_name = sales_data.get("project_opportunity", {}).get("project_name", "该商机")
+            return f"您确定要删除商机 **{proj_name}** 吗？\n⚠️ 此操作不可逆，请谨慎确认。"
+        
+        # 调用 LLM 生成更自然的确认提示
+        from volcenginesdkarkruntime import Ark
+        from src.services.llm_service import load_prompt
+        
+        client = Ark(api_key=self.api_key)
+        system_prompt = load_prompt("delete_confirmation")
+        
+        try:
+            completion = client.chat.completions.create(
+                model=self.endpoint_id,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(sales_data, ensure_ascii=False)},
+                ],
+                temperature=0.3,
+            )
+            return completion.choices[0].message.content.strip()
+        except Exception as e:
+            # 如果 LLM 调用失败，返回基础提示
+            proj_name = sales_data.get("project_opportunity", {}).get("project_name", "该商机")
+            return f"您确定要删除商机 **{proj_name}** 吗？\n⚠️ 此操作不可逆，请谨慎确认。"
 
     def delete_opportunity(self, record_id):
         """根据 ID 删除商机"""

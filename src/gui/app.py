@@ -275,17 +275,50 @@ def handle_logic(prompt):
                     add_ai_message("分析失败。")
                     return
             
+            # 【改进】项目关联检查 - 防止重复创建
+            extracted_proj_name = data.get("project_opportunity", {}).get("project_name")
+            if extracted_proj_name:
+                candidates = st.session_state.controller.find_potential_matches(extracted_proj_name)
+                
+                if candidates:
+                    add_ai_message(f"🔍 检测到疑似现有项目，请选择：")
+                    
+                    # 构建选项
+                    options = [f"{i+1}. {cand['name']}" for i, cand in enumerate(candidates)]
+                    options.append(f"{len(candidates)+1}. 新建：{extracted_proj_name}")
+                    
+                    for opt in options:
+                        add_ai_message(opt)
+                    
+                    # 等待用户选择
+                    st.session_state.step = "select_project_for_create"
+                    st.session_state.create_candidates = candidates
+                    st.session_state.sales_data = data
+                    st.session_state.last_polished_text = polished
+                    add_ai_message("请输入序号（1-{}）：".format(len(candidates)+1))
+                    return
+            
             st.session_state.sales_data = data
             add_report_message(data)
             st.session_state.step = "missing_fields_start"
             add_ai_message("好的，我已为您提取了关键信息。有需要补充或修改的地方吗？")
         
         elif intent == "LIST":
-            # 列表查询 - 直接使用提取的内容作为搜索词
-            search_term = extracted_content.strip() if extracted_content else ""
+            # 列表查询 - 使用 extract_search_term() 提取搜索词（与 CLI 一致）
+            # 这样可以从用户的原始输入中通过 LLM 准确提取关键词
+            search_term = st.session_state.controller.extract_search_term(prompt)
+            search_term = search_term.strip() if search_term else ""
             clean_term = search_term.upper().replace("`", "").replace("'", "").replace('"', "")
             
-            is_full_list = clean_term in ["ALL", "未知", "UNKNOWN"] or not clean_term or clean_term in ["商机", "项目", "单子", "列表", "全部", "所有"]
+            # 判断是否是"列出全部"的泛指请求
+            # 情况1: extracted_content 为空（classify_intent 返回了 "content": ""）
+            # 情况2: extracted_content 包含 "所有"、"ALL" 等关键词
+            # 情况3: 原始内容中只包含通用词汇，无具体搜索词
+            is_full_list = (
+                not clean_term or 
+                clean_term in ["ALL", "未知", "UNKNOWN"] or 
+                clean_term in ["商机", "项目", "单子", "列表", "全部", "所有"]
+            )
             
             with st.spinner("正在检索商机..."):
                 if is_full_list:
@@ -323,6 +356,7 @@ def handle_logic(prompt):
                     add_report_message(target)
             else:
                 st.session_state.search_candidates = candidates
+                st.session_state.select_result_source = "GET"
                 st.session_state.step = "select_result"
                 msg = "找到多个相关商机，请选择：\n"
                 for i, cand in enumerate(candidates):
@@ -348,6 +382,7 @@ def handle_logic(prompt):
                     add_ai_message("有什么需要调整的地方吗？")
             else:
                 st.session_state.search_candidates = candidates
+                st.session_state.select_result_source = "UPDATE"
                 st.session_state.step = "select_result"
                 msg = "找到多个相关商机，请选择要修改的项目：\n"
                 for i, cand in enumerate(candidates):
@@ -367,11 +402,14 @@ def handle_logic(prompt):
                 target = st.session_state.controller.get_opportunity_by_id(candidates[0]["id"])
                 if target:
                     st.session_state.sales_data = target
-                    add_ai_message(f"确认删除项目：**{target.get('project_opportunity', {}).get('project_name')}** 吗？(输入 '确认' 或 '是' 来删除)")
+                    pname = target.get("project_opportunity", {}).get("project_name")
+                    add_ai_message(f"🗑️ 确认删除项目：**{pname}** 吗？（输入 '确认' 或 '是' 来删除）")
+                    add_report_message(target)
                     st.session_state.step = "confirm_delete"
             else:
                 st.session_state.search_candidates = candidates
-                st.session_state.step = "select_delete"
+                st.session_state.select_result_source = "DELETE"
+                st.session_state.step = "select_result"
                 msg = "找到多个相关商机，请选择要删除的项目：\n"
                 for i, cand in enumerate(candidates):
                     msg += f"\n{i+1}. {cand['name']}"
@@ -413,6 +451,143 @@ def handle_logic(prompt):
             st.session_state.sales_data = st.session_state.controller.update(st.session_state.sales_data, prompt)
             add_report_message(st.session_state.sales_data)
             add_ai_message("修改完成。确认无误请点击 **'确认保存'**。")
+
+    # 【多候选选择处理】
+    elif st.session_state.step == "select_project_for_create":
+        # CREATE 流程中选择项目关联
+        try:
+            choice = int(prompt.strip())
+            candidates = st.session_state.get("create_candidates", [])
+            num_candidates = len(candidates)
+            
+            if 1 <= choice <= num_candidates:
+                # 选择了关联旧项目
+                old_data = st.session_state.controller.get_opportunity_by_id(candidates[choice-1]["id"])
+                if old_data:
+                    selected_name = old_data.get("project_opportunity", {}).get("project_name")
+                    add_ai_message(f"✅ 已关联：{selected_name}")
+                    
+                    # 检测冲突
+                    new_data = st.session_state.sales_data
+                    conflicts = st.session_state.controller.detect_data_conflicts(old_data, new_data)
+                    
+                    if conflicts:
+                        add_ai_message(f"⚠️ 检测到 {len(conflicts)} 处字段冲突，请确认是否覆盖：")
+                        st.session_state.conflict_list = conflicts
+                        st.session_state.conflict_index = 0
+                        st.session_state.conflict_decisions = {}
+                        st.session_state.step = "confirm_conflict"
+                    else:
+                        # 无冲突，直接更新为关联的项目名
+                        st.session_state.sales_data["project_opportunity"]["project_name"] = selected_name
+                        st.session_state.step = "missing_fields_start"
+                        add_report_message(st.session_state.sales_data)
+                        add_ai_message("好的，我已为您提取了关键信息。有需要补充或修改的地方吗？")
+            elif choice == num_candidates + 1:
+                # 选择了新建
+                add_ai_message(f"✅ 确认新建：{st.session_state.sales_data.get('project_opportunity', {}).get('project_name')}")
+                st.session_state.step = "missing_fields_start"
+                add_report_message(st.session_state.sales_data)
+                add_ai_message("好的，我已为您提取了关键信息。有需要补充或修改的地方吗？")
+            else:
+                add_ai_message(f"❌ 无效序号。请输入 1 到 {num_candidates+1} 之间的数字。")
+        except ValueError:
+            add_ai_message("❌ 请输入有效的序号。")
+
+    elif st.session_state.step == "confirm_conflict":
+        # CREATE 流程中逐个确认字段冲突
+        conflicts = st.session_state.get("conflict_list", [])
+        conflict_index = st.session_state.get("conflict_index", 0)
+        
+        if conflict_index < len(conflicts):
+            cat, key, label, old_val, new_val = conflicts[conflict_index]
+            is_affirm = st.session_state.controller.judge_user_affirmative(prompt)
+            st.session_state.conflict_decisions[conflict_index] = is_affirm
+            
+            if is_affirm:
+                add_ai_message(f"✅ 已确认覆盖 **{label}**。")
+                # 更新 sales_data
+                if cat not in st.session_state.sales_data:
+                    st.session_state.sales_data[cat] = {}
+                st.session_state.sales_data[cat][key] = new_val
+            else:
+                add_ai_message(f"✅ 保留原值。")
+                # 回滚到旧值
+                if cat not in st.session_state.sales_data:
+                    st.session_state.sales_data[cat] = {}
+                st.session_state.sales_data[cat][key] = old_val
+            
+            st.session_state.conflict_index += 1
+            
+            if st.session_state.conflict_index < len(conflicts):
+                # 继续下一个冲突
+                ncat, nkey, nlabel, nold, nnew = conflicts[st.session_state.conflict_index]
+                add_ai_message(f"{nlabel}: 原[{nold}] → 新[{nnew}]。要覆盖吗？")
+            else:
+                # 所有冲突处理完毕
+                add_ai_message("✅ 冲突确认完毕。")
+                st.session_state.step = "missing_fields_start"
+                add_report_message(st.session_state.sales_data)
+                add_ai_message("好的，我已为您提取了关键信息。有需要补充或修改的地方吗？")
+        else:
+            st.session_state.step = "missing_fields_start"
+            add_ai_message("好的，我已为您提取了关键信息。有需要补充或修改的地方吗？")
+
+    elif st.session_state.step == "select_result":
+        # GET/UPDATE/DELETE 流程中选择目标商机
+        try:
+            choice = int(prompt.strip())
+            candidates = st.session_state.get("search_candidates", [])
+            
+            if 1 <= choice <= len(candidates):
+                target = st.session_state.controller.get_opportunity_by_id(candidates[choice-1]["id"])
+                if target:
+                    # 判断来源意图（保存在 session state 中）
+                    source_intent = st.session_state.get("select_result_source", "GET")
+                    
+                    if source_intent == "GET":
+                        pname = target.get("project_opportunity", {}).get("project_name")
+                        add_ai_message(f"✅ 已为您找到：**{pname}**")
+                        add_report_message(target)
+                        # GET 之后无后续操作，返回主菜单
+                        st.session_state.step = "main"
+                    elif source_intent == "UPDATE":
+                        pname = target.get("project_opportunity", {}).get("project_name")
+                        add_ai_message(f"✅ 已为您锁定项目：**{pname}**")
+                        add_report_message(target)
+                        st.session_state.sales_data = target
+                        st.session_state.step = "review"
+                        add_ai_message("有什么需要调整的地方吗？")
+                    elif source_intent == "DELETE":
+                        pname = target.get("project_opportunity", {}).get("project_name")
+                        add_ai_message(f"🗑️ 确认删除项目：**{pname}** 吗？（输入 '确认' 或 '是' 来删除）")
+                        st.session_state.sales_data = target
+                        st.session_state.step = "confirm_delete"
+            else:
+                add_ai_message(f"❌ 无效序号。请输入 1 到 {len(candidates)} 之间的数字。")
+        except ValueError:
+            add_ai_message("❌ 请输入有效的序号。")
+
+    elif st.session_state.step == "select_delete":
+        # DELETE 流程中选择目标商机（重定向到 select_result）
+        st.session_state.select_result_source = "DELETE"
+        st.session_state.step = "select_result"
+        # 再次处理输入
+        handle_logic(prompt)
+        return
+
+    elif st.session_state.step == "confirm_delete":
+        # DELETE 流程中最终确认删除
+        if st.session_state.controller.judge_user_affirmative(prompt):
+            target_id = st.session_state.sales_data.get("id")
+            if st.session_state.controller.delete_opportunity(target_id):
+                add_ai_message("✅ 已成功删除。")
+                reset_state()
+            else:
+                add_ai_message("❌ 删除失败，请重试。")
+        else:
+            add_ai_message("❌ 已取消删除。")
+            reset_state()
 
 # --- TRIGGER HANDLING ---
 if st.session_state.get("final_send_btn"):
