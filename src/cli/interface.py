@@ -317,6 +317,13 @@ def handle_list_logic(content):
 
 def handle_create_logic(content):
     """处理 CREATE 意图 (原 Analyze 流程)"""
+    # 0. 确认意图：如果是录入，先问一句，防止误触发
+    if content:
+        # 秘书腔调询问
+        if not controller.judge_user_affirmative(typer.prompt(get_random_ui("ask_create_opportunity"), default="Y")):
+            console.print(f"[dim]{get_random_ui('operation_cancel')}[/dim]")
+            return
+
     console.print(Panel(f"[bold cyan]{get_random_ui('polishing_start')}[/bold cyan]", style="cyan"))
     polished = controller.polish(content)
     console.print(Panel(polished, title="[bold green]整理后的文本[/bold green]"))
