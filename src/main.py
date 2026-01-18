@@ -54,5 +54,15 @@ def analyze(content: str = typer.Option(None, "--content", "-c", help="要提炼
         from src.cli.interface import run_analyze
         run_analyze(content, audio_file, use_mic, save, debug)
 
+@app.command()
+def manage():
+    """
+    进入商机管理控制台 (CLI)。
+    支持查看、搜索、修改及删除历史商机。
+    """
+    # 移交指挥权给 CLI 接口模块
+    from src.cli.interface import manage as run_manage
+    run_manage()
+
 if __name__ == "__main__":
     app()

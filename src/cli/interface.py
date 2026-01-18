@@ -51,6 +51,14 @@ def get_random_ui(key: str, **kwargs) -> str:
     template = random.choice(templates) if isinstance(templates, list) and templates else defaults.get(key, "")
     return template.format(**kwargs)
 
+def _safe_str(val):
+    """Helper to convert list or None to string for Rich rendering"""
+    if isinstance(val, list):
+        return ", ".join(map(str, val))
+    if val is None:
+        return ""
+    return str(val)
+
 # --- View Components ---
 
 def display_result_human_readable(data: dict):
@@ -59,22 +67,22 @@ def display_result_human_readable(data: dict):
     table.add_column("Value")
     
     type_map = {"chat": "随手记/闲聊", "meeting": "正式会议"}
-    table.add_row("🗣️ 记录类型", type_map.get(data.get("record_type"), data.get("record_type")))
-    table.add_row("👨‍💼 我方销售", data.get("sales_rep", "未知"))
-    table.add_row("📝 核心摘要", data.get("summary", "暂无"))
+    table.add_row("🗣️ 记录类型", _safe_str(type_map.get(data.get("record_type"), data.get("record_type"))))
+    table.add_row("👨‍💼 我方销售", _safe_str(data.get("sales_rep", "未知")))
+    table.add_row("📝 核心摘要", _safe_str(data.get("summary", "暂无")))
     
     sentiment = data.get("sentiment", "未知")
     sentiment_color = "green" if "积极" in str(sentiment) else ("red" if "消极" in str(sentiment) else "yellow")
-    table.add_row("😊 客户态度", f"[{sentiment_color}]{sentiment}[/{sentiment_color}]")
+    table.add_row("😊 客户态度", f"[{sentiment_color}]{_safe_str(sentiment)}[/{sentiment_color}]")
     console.print(table); console.print("")
 
     cust_tree = Tree("[bold blue]👤 客户画像[/bold blue]")
     cust = data.get("customer_info", {})
     if cust:
-        cust_tree.add(f"姓名: [bold]{cust.get('name', 'N/A')}[/bold]")
-        cust_tree.add(f"公司: {cust.get('company', 'N/A')}")
-        cust_tree.add(f"职位: {cust.get('role', 'N/A')}")
-        cust_tree.add(f"联系方式: {cust.get('contact', 'N/A')}")
+        cust_tree.add(f"姓名: [bold]{_safe_str(cust.get('name', 'N/A'))}[/bold]")
+        cust_tree.add(f"公司: {_safe_str(cust.get('company', 'N/A'))}")
+        cust_tree.add(f"职位: {_safe_str(cust.get('role', 'N/A'))}")
+        cust_tree.add(f"联系方式: {_safe_str(cust.get('contact', 'N/A'))}")
     else: cust_tree.add("[dim]未提取到有效信息[/dim]")
     console.print(cust_tree); console.print("")
 
@@ -82,19 +90,19 @@ def display_result_human_readable(data: dict):
     opp = data.get("project_opportunity", {})
     if opp:
         proj_name = opp.get("project_name", "未命名项目")
-        opp_tree.add(f"项目: [bold]{proj_name}[/bold] ({'新项目' if opp.get('is_new_project') else '既有项目'})")
+        opp_tree.add(f"项目: [bold]{_safe_str(proj_name)}[/bold] ({'新项目' if opp.get('is_new_project') else '既有项目'})")
         
         # 数字化转换
         stage_key = str(opp.get("opportunity_stage", ""))
         stage_name = controller.stage_map.get(stage_key, "未知")
-        opp_tree.add(f"阶段: [blue]{stage_name}[/blue]")
+        opp_tree.add(f"阶段: [blue]{_safe_str(stage_name)}[/blue]")
         
-        opp_tree.add(f"预算: [green]{opp.get('budget', '未知')}[/green]")
-        opp_tree.add(f"时间: {opp.get('timeline', '未知')}")
+        opp_tree.add(f"预算: [green]{_safe_str(opp.get('budget', '未知'))}[/green]")
+        opp_tree.add(f"时间: {_safe_str(opp.get('timeline', '未知'))}")
         comp_node = opp_tree.add("⚔️ 竞争对手")
-        for c in opp.get("competitors", []): comp_node.add(c)
+        for c in opp.get("competitors", []): comp_node.add(str(c))
         staff_node = opp_tree.add("🧑‍💻 我方技术人员")
-        for s in opp.get("technical_staff", []): staff_node.add(s)
+        for s in opp.get("technical_staff", []): staff_node.add(str(s))
     else: opp_tree.add("[dim]暂未发现明确商机[/dim]")
     console.print(opp_tree); console.print("")
 
@@ -124,11 +132,136 @@ def check_and_fill_missing_fields(data: dict):
         return controller.refine(data, user_supplements)
     return data
 
+def _interactive_review_loop(data: dict, save_handler, is_new=False):
+    """
+    统一的交互式审查循环。
+    data: 初始数据
+    save_handler: 保存/更新数据的回调函数，接收 data，返回 (success, msg)
+    is_new: 是否为新建记录（影响提示语）
+    """
+    aff_kw = ["是", "需要", "yes", "y", "对", "ok", "好的", "好", "可以", "行", "没问题", "嗯", "妥", "存"]
+    neg_kw = ["否", "不", "no", "n", "没", "不需要", "不用", "取消", "别"]
+    
+    current_data = data
+    while True:
+        console.clear()
+        console.print(Panel("[bold green]LinkSell 智能销售助手 - 数据审查[/bold green]", style="bold green", expand=False))
+        
+        display_result_human_readable(current_data)
+        
+        # 1. 询问意图
+        prompt_text = get_random_ui("ask_modification") if not is_new else "确认保存吗？(可以直接输入修改意见)"
+        user_input = typer.prompt(prompt_text, default="", show_default=False).strip()
+        
+        lower_in = user_input.lower()
+
+        # 2. 判定是否为“保存/退出”意图
+        # 如果输入了否定词（取消）
+        if any(kw in lower_in for kw in neg_kw) and len(lower_in) < 10:
+             if typer.confirm("确定要放弃修改/保存并退出吗？"):
+                 console.print(f"[dim]{get_random_ui('operation_cancel')}[/dim]")
+                 return
+             else:
+                 continue
+        
+        # 如果输入了肯定词（保存），或者是空回车（默认保存）
+        is_save_intent = False
+        if any(kw in lower_in for kw in aff_kw) and len(lower_in) < 5:
+            is_save_intent = True
+        elif user_input == "": 
+             is_save_intent = True
+        
+        if is_save_intent:
+             # 二次确认
+             if not is_new: # 修改模式下再问一句，新建模式下空回车就直接存了
+                 if not typer.confirm("确认保存当前修改？"): continue
+             
+             success, msg = save_handler(current_data)
+             if success:
+                 console.print(f"[bold blue]{msg}[/bold blue]")
+                 break
+             else:
+                 console.print(f"[red]保存失败：{msg}[/red]")
+                 # 失败后继续循环
+                 if not typer.confirm("是否继续修改？"): break
+                 continue
+        else:
+            # 3. 否则视为修改指令
+            console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
+            current_data = controller.update(current_data, user_input)
+
+@cli_app.command()
+def manage():
+    """管理商机 (增删改查)"""
+    while True:
+        console.clear()
+        console.print(Panel("[bold green]LinkSell 商机管理控制台[/bold green]", style="bold green"))
+        
+        # List all (Simplified)
+        all_opps = controller.get_all_opportunities()
+        table = Table(show_header=True, header_style="bold magenta", box=None)
+        table.add_column("ID", style="dim", width=4)
+        table.add_column("项目名称", style="bold")
+        table.add_column("销售", width=8)
+        table.add_column("阶段", width=8)
+        table.add_column("更新时间", style="dim")
+        
+        for opp in all_opps:
+             pid = str(opp.get("id", "?"))
+             pname = _safe_str(opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知")))
+             sales = _safe_str(opp.get("sales_rep", "-"))
+             stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
+             stage_name = _safe_str(controller.stage_map.get(stage_code, stage_code))
+             time_str = _safe_str(opp.get("updated_at", ""))[:10]
+             table.add_row(pid, pname, sales, stage_name, time_str)
+        
+        console.print(table)
+        console.print("\n[dim]提示：输入 'E 1' 编辑ID为1的记录，'D 1' 删除ID为1的记录[/dim]")
+        action = typer.prompt("请选择操作: [N]新建 / [E]编辑 / [D]删除 / [Q]退出").strip().upper()
+        
+        if action == "Q": break
+        
+        if action == "N":
+             run_analyze() # Reuse existing flow
+        
+        elif action.startswith("D"):
+            # Delete
+            target_id = action[1:].strip() if len(action) > 1 else typer.prompt("请输入要删除的 ID")
+            target = controller.get_opportunity_by_id(target_id)
+            if target:
+                display_result_human_readable(target)
+                pname = target.get("project_opportunity", {}).get("project_name", "未知")
+                if typer.confirm(f"⚠️  警告：确定要彻底删除项目【{pname}】吗？"):
+                    if controller.delete_opportunity(target_id):
+                        console.print("[green]删除成功！[/green]")
+                        time.sleep(1)
+                    else:
+                        console.print("[red]删除失败。[/red]")
+                        time.sleep(1)
+            else:
+                console.print("[red]未找到该 ID。[/red]")
+                time.sleep(1)
+
+        elif action.startswith("E"):
+            # Edit
+            target_id = action[1:].strip() if len(action) > 1 else typer.prompt("请输入要编辑的 ID")
+            target = controller.get_opportunity_by_id(target_id)
+            if target:
+                def save_wrapper(data):
+                    if controller.overwrite_opportunity(data):
+                        return True, "修改已保存！"
+                    return False, "保存失败"
+                
+                _interactive_review_loop(target, save_wrapper, is_new=False)
+            else:
+                 console.print("[red]未找到该 ID。[/red]")
+                 time.sleep(1)
+
 @cli_app.command()
 def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = False, save: bool = False, debug: bool = False):
     """CLI 核心分析流程"""
     if use_mic:
-        mic_path = Path("data/tmp") / f"mic_{{int(time.time())}}.wav"
+        mic_path = Path("data/tmp") / f"mic_{int(time.time())}.wav"
         from src.services.audio_capture import record_audio_until_enter
         if record_audio_until_enter(str(mic_path)): audio_file = str(mic_path)
         else: return
@@ -142,7 +275,8 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
 
     # 新增：意图分流
     with console.status("[bold yellow]正在识别您的需求...", spinner="dots"):
-        intent = controller.get_intent(content)
+        # Utilizing identify_intent as seen in controller.py
+        intent = controller.identify_intent(content)
         
     if intent == "QUERY":
         with console.status("[bold cyan]正在翻阅历史记录...", spinner="search"):
@@ -165,37 +299,16 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
 
     result = check_and_fill_missing_fields(result)
 
-    aff_kw = ["是", "需要", "yes", "y", "对", "ok", "好的", "好", "可以", "行", "没问题", "嗯", "妥", "存"]
-    neg_kw = ["否", "不", "no", "n", "没", "不需要", "不用", "取消", "别"]
+    # 如果命令行指定了 save，直接保存退出
+    if save:
+        rid, _ = controller.save(result)
+        console.print(f"[bold blue]{get_random_ui('db_save_success', record_id=rid)}[/bold blue]")
+        return
 
-    while True:
-        # 翻篇儿！清屏，让标题和结果永远在最上方
-        console.clear()
-        console.print(Panel("[bold green]LinkSell 智能销售助手 - CLI 模式[/bold green]", style="bold green", expand=False))
-        
-        display_result_human_readable(result)
-        if save:
-            rid, _ = controller.save(result)
-            console.print(f"[bold blue]{get_random_ui('db_save_success', record_id=rid)}[/bold blue]"); break
+    # 定义保存回调
+    def create_save_handler(data):
+        rid, _ = controller.save(data)
+        return True, get_random_ui('db_save_success', record_id=rid)
 
-        user_input = typer.prompt(get_random_ui("ask_modification"), default="", show_default=False).strip()
-        if not user_input: continue
-        lower_in = user_input.lower()
-        
-        if any(kw in lower_in for kw in neg_kw) and len(lower_in) < 10:
-            save_in = typer.prompt(get_random_ui("ask_save"), default="y", show_default=False).strip().lower()
-            from src.services.llm_service import judge_affirmative
-            is_agree = (save_in == "" or any(kw in save_in for kw in aff_kw))
-            if not is_agree: is_agree = judge_affirmative(save_in, controller.api_key, controller.endpoint_id)
-            if is_agree:
-                rid, _ = controller.save(result)
-                console.print(f"[bold blue]{get_random_ui('db_save_success', record_id=rid)}[/bold blue]"); break
-            else: console.print(f"[dim]{get_random_ui('operation_cancel')}[/dim]"); break
-        elif any(kw in lower_in for kw in aff_kw) and len(lower_in) < 5:
-            instr = typer.prompt(get_random_ui("modification_ask"))
-            if instr:
-                console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
-                result = controller.update(result, instr)
-        else:
-            console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
-            result = controller.update(result, user_input)
+    # 进入统一审查循环
+    _interactive_review_loop(result, create_save_handler, is_new=True)

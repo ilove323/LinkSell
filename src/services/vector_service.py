@@ -50,6 +50,18 @@ class VectorService:
             ids=[str(record_id)]
         )
 
+    def delete_record(self, record_id: str):
+        """
+        从向量库中彻底删除指定 ID 的记录。
+        """
+        try:
+            self.collection.delete(ids=[str(record_id)])
+            return True
+        except Exception as e:
+            # 咱也不吱声，就在心里记个过
+            # print(f"Vector delete warning: {e}")
+            return False
+
     def search(self, query: str, top_k=5):
         query_embedding = self.model.encode(query).tolist()
         

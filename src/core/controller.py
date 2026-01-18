@@ -68,10 +68,32 @@ class LinkSellController:
             raise ValueError("LLM Configuration Invalid")
         return analyze_text(text, self.api_key, self.endpoint_id)
 
-    def get_intent(self, text):
+    def identify_intent(self, text):
+        """识别意图：ANALYZE, QUERY, OTHER"""
         if not self.validate_llm_config():
             return "ANALYZE"
         return classify_intent(text, self.api_key, self.endpoint_id)
+
+    def search_opportunities(self, keyword):
+        """根据关键字模糊搜索已有的项目名称，返回 (项目名, 销售) 列表。"""
+        data_file_path = Path(self.config.get("storage", "data_file", fallback="data/sales_data.json"))
+        if not data_file_path.exists():
+            return []
+        
+        with open(data_file_path, "r", encoding="utf-8") as f:
+            try: db_data = json.load(f)
+            except: db_data = []
+        
+        # 匹配结果：包含项目名和销售人
+        matches = []
+        for p in db_data:
+            p_name = p.get("project_name", "")
+            if keyword.lower() in p_name.lower():
+                matches.append({
+                    "name": p_name,
+                    "sales_rep": p.get("sales_rep", "未知")
+                })
+        return matches
 
     def handle_query(self, query_text):
         if not self.validate_llm_config():
@@ -200,3 +222,71 @@ class LinkSellController:
             except: pass
             
         return record_id, "data/records/backup.json"
+
+    def get_all_opportunities(self):
+        """获取所有商机记录"""
+        data_file_path = Path(self.config.get("storage", "data_file", fallback="data/sales_data.json"))
+        if not data_file_path.exists(): return []
+        with open(data_file_path, "r", encoding="utf-8") as f:
+            try: return json.load(f)
+            except: return []
+
+    def get_opportunity_by_id(self, record_id):
+        """根据 ID 获取单条商机"""
+        all_data = self.get_all_opportunities()
+        # JSON 中读取的 ID 可能是 int，传入的可能是 str，做个兼容
+        return next((item for item in all_data if str(item.get("id")) == str(record_id)), None)
+
+    def delete_opportunity(self, record_id):
+        """根据 ID 删除商机"""
+        all_data = self.get_all_opportunities()
+        initial_len = len(all_data)
+        all_data = [item for item in all_data if str(item.get("id")) != str(record_id)]
+        
+        if len(all_data) < initial_len:
+            data_file_path = Path(self.config.get("storage", "data_file", fallback="data/sales_data.json"))
+            with open(data_file_path, "w", encoding="utf-8") as f:
+                json.dump(all_data, f, ensure_ascii=False, indent=2)
+            
+            # 补刀：把向量库里的幽灵也给灭了
+            if self.vector_service:
+                self.vector_service.delete_record(record_id)
+            
+            return True
+        return False
+
+    def overwrite_opportunity(self, new_data):
+        """
+        完全覆盖更新一个商机记录（用于编辑模式）。
+        不同于 save 的“追加模式”，这是“重写模式”。
+        """
+        all_data = self.get_all_opportunities()
+        record_id = new_data.get("id")
+        
+        if not record_id: return False
+        
+        updated = False
+        for i, item in enumerate(all_data):
+            if str(item.get("id")) == str(record_id):
+                # 保持记录日志不丢失 (如果 new_data 里没有带回来 record_logs)
+                if "record_logs" not in new_data and "record_logs" in item:
+                    new_data["record_logs"] = item["record_logs"]
+                
+                # 更新时间戳
+                new_data["updated_at"] = datetime.datetime.now().isoformat()
+                
+                all_data[i] = new_data
+                updated = True
+                break
+        
+        if updated:
+            data_file_path = Path(self.config.get("storage", "data_file", fallback="data/sales_data.json"))
+            with open(data_file_path, "w", encoding="utf-8") as f:
+                json.dump(all_data, f, ensure_ascii=False, indent=2)
+            
+            # 同步更新向量库
+            if self.vector_service:
+                 try: self.vector_service.add_record(record_id, new_data)
+                 except: pass
+            return True
+        return False
