@@ -11,13 +11,14 @@ LinkSell 2.0 采用严格的 **MVC (Model-View-Controller)** 分层架构，确�
 *   **类**: `LinkSellController`
 *   **职责**: 系统的“唯一大脑”。所有业务逻辑、API 调用、文件读写、配置加载**必须**在此完成。
 *   **核心方法**:
-    *   `transcribe(audio_path)`: 调用 ASR 服务。
+    *   `transcribe(audio_path)`: 调用 ASR 服务，支持异步轮询。
     *   `polish(text)`: 调用 LLM 润色文本。
     *   `analyze(text)`: 调用 LLM 生成结构化数据。
-    *   `get_missing_fields(data)`: 业务规则校验，识别缺失字段。
+    *   `check_is_sales(text)`: **(关键逻辑)** 调用分类器判断内容是否属于业务范畴，防止非业务数据污染。
+    *   `get_missing_fields(data)`: 业务规则校验。支持识别“未知/NA”等占位符，并映射业务显示名称。
     *   `refine(data, supplements)`: 补充缺失信息。
     *   `update(data, instruction)`: 处理自然语言修改指令。
-    *   `save(data)`: 持久化存储 (JSON + Backup)。
+    *   `save(data)`: 持久化存储。包含文件名安全过滤逻辑，防止非法路径字符引发崩溃。
 
 ### 1.2 视图层 (View) - GUI (Web)
 *   **文件**: `src/gui/app.py`
@@ -36,7 +37,10 @@ LinkSell 2.0 采用严格的 **MVC (Model-View-Controller)** 分层架构，确�
 
 ### 1.5 服务层 (Services)
 *   **目录**: `src/services/`
-*   **职责**: 无状态的底层 API 封装（ASR, LLM）。由 Controller 统一调用。
+*   **职责**: 无状态的底层 API 封装（ASR, LLM）。
+    *   **ASR 服务**: 采用“提交任务 -> 定时轮询”模式，具备多版本响应结构兼容性。
+    *   **LLM 意图识别**: 包含 `judge_affirmative` 逻辑，能够通过自然语言识别用户的“肯定/否定”意图。
+    *   **音频采集**: 支持阻塞式录音，自动适配 ASR 所需采样率 (16k/单声道)。
 
 ## 2. 核心工作流 (Workflow)
 
