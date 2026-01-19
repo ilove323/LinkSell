@@ -242,54 +242,27 @@ def handle_record_logic(content):
 
 def handle_create_logic(project_name_hint):
     """处理 CREATE 意图 (V3.0 正式录入/提交模式)"""
-    global staged_data, current_opp_id, pending_action
+    global engine
     
     console.print(Panel(f"🚀 [bold yellow]正在分析暂存笔记并提交至商机...[/bold yellow]", style="yellow"))
     
-    # 调用核心业务逻辑进行提交
-    result_pkg = controller.process_commit_request(project_name_hint)
+    # 调用对话引擎进行提交，自动保存
+    result = engine.handle_create(project_name_hint)
     
-    if result_pkg["status"] == "error":
-        console.print(f"[red]{result_pkg.get('message', '处理失败')}[/red]")
+    if result["status"] == "error":
+        console.print(f"[red]{result['message']}[/red]")
         return
 
-    draft = result_pkg["draft"]
-    status = result_pkg["status"]
+    # 显示消息（包含自动保存的确认）
+    console.print(f"[bold cyan]{result['message']}[/bold cyan]")
     
-    # 结果分支处理
-    if status == "linked":
-        match = result_pkg["linked_target"]
-        current_opp_id = match["id"]
-        
-        # 获取旧档案并合并
-        old_data = controller.get_opportunity_by_id(match["id"])
-        if old_data:
-            staged_data = controller.merge_draft_into_old(old_data, draft)
-        else:
-            staged_data = draft
-            
-        console.print(f"[bold green]✅ 已成功关联并更新现有项目: {match['name']}[/bold green]")
-    else:
-        current_opp_id = None
-        staged_data = draft
-        console.print(f"[bold cyan]✨ 已识别并生成新商机草稿：{draft.get('project_opportunity',{}).get('project_name')}[/bold cyan]")
-
-    # 缺失字段告知 (使用 Controller 统一生成的话术)
-    msg = controller.get_missing_fields_notification(staged_data)
-    console.print(Panel(msg, style="yellow"))
-
+    # 缺失字段告知
+    if result.get("missing_fields"):
+        msg = controller.get_missing_fields_notification(result["draft"])
+        console.print(Panel(msg, style="yellow"))
+    
     # 展示结果
-    display_result_human_readable(staged_data)
-    
-    # 设置挂起动作：保存/放弃选择
-    pending_action = {
-        "type": "save_discard",
-        "draft": staged_data
-    }
-    console.print("[bold cyan]📥 请确认提交内容：[1] 确认保存并同步  [2] 放弃修改[/bold cyan]")
-    
-    # 提交后自动清空 buffer
-    controller.clear_note_buffer()
+    display_result_human_readable(result["draft"])
 
 def handle_list_logic(content):
     """处理 LIST 意图"""

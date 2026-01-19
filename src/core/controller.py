@@ -4,6 +4,7 @@ import datetime
 import re
 import os
 import glob
+import uuid
 from pathlib import Path
 from src.services.llm_service import (
     polish_text, classify_intent, query_sales_data, summarize_text,
@@ -756,6 +757,7 @@ class LinkSellController:
         """
         覆盖更新商机 (编辑模式)
         处理重命名逻辑：如果项目名变了，文件名也得跟着变。
+        返回：True 表示保存成功，False 表示失败
         """
         old_file_path_str = new_data.get("_file_path")
         proj_name = new_data.get("project_opportunity", {}).get("project_name")
@@ -784,18 +786,25 @@ class LinkSellController:
             with open(new_file_path, "w", encoding="utf-8") as f:
                 json.dump(save_data, f, ensure_ascii=False, indent=2)
             
+            print(f"✅ 商机已保存至: {new_file_path}")
+            
             # 2. 如果文件名变了，把旧文件删了
             if old_file_path_str and Path(old_file_path_str).exists():
                 old_file_path = Path(old_file_path_str)
                 if old_file_path.resolve() != new_file_path.resolve():
                     os.remove(old_file_path)
+                    print(f"🗑️ 已删除旧文件: {old_file_path}")
             
             # 3. 向量库同步 (ID 保持不变，内容覆盖)
             if self.vector_service:
                 self.vector_service.add_record(save_data.get("id"), save_data)
+                print(f"📚 已保存至向量库 (ID: {save_data.get('id')})")
+            else:
+                print("⚠️ 向量库未初始化，跳过向量存储")
+            
             return True
         except Exception as e:
-            print(f"Update error: {e}")
+            print(f"❌ 保存失败: {e}")
             return False
 
     def judge_user_affirmative(self, text):
@@ -881,8 +890,22 @@ class LinkSellController:
         """
         search_term = self.extract_search_term(content)
         
+        # 特殊处理：如果提示词返回 CURRENT，表示这是对当前商机的操作
+        if search_term == "CURRENT" and current_context_id:
+            target = self.get_opportunity_by_id(current_context_id)
+            if target:
+                return target, [], "found_by_context"
+            else:
+                return None, [], "not_found"
+        
         # 1. 上下文模糊检查 (Vague Check)
-        is_vague = not search_term or any(k in search_term.lower() for k in ["unknown", "记录", "项目", "修改", "更新", "内容"])
+        # 只有在search_term完全为空，或者只包含纯操作词（不包含有意义的内容）时，才认为是模糊查询
+        is_vague = (
+            not search_term or 
+            search_term in ["unknown", "Unknown", "未知"] or
+            # 当前查询主要目的不是查找目标，而是对当前商机进行操作
+            (any(k in search_term.lower() for k in ["记录", "修改", "更新", "内容", "新增", "添加"]) and len(search_term) < 5)
+        )
         
         if is_vague and current_context_id:
             target = self.get_opportunity_by_id(current_context_id)
@@ -951,68 +974,48 @@ class LinkSellController:
 
     def process_commit_request(self, project_name_hint=None):
         """
-        [核心业务逻辑] 将暂存区的笔记正式提交到商机。
-        1. 尝试锁定目标商机 (根据 hint 或笔记内容)
-        2. 调用 Architect Analyze 进行结构化提取/合并
-        3. 返回结果包
+        [核心业务逻辑] 将暂存区的笔记正式提交到新商机。
+        1. 调用 Architect Analyze 进行结构化字段提取
+        2. 生成 UUID ID
+        3. 补全数据结构
+        4. 返回新商机数据
+        
+        注：不进行任何关联查询，直接创建新商机
         """
         if not self.note_buffer:
             return {"status": "error", "message": "笔记暂存区为空，请先录入一些内容。"}
 
-        # 1. 锁定目标
-        target_obj = None
-        if project_name_hint:
-            # 这里的 hint 可能是从意图识别里拿出来的 "RECORD" content
-            res_target, candidates, status = self.resolve_target_interactive(project_name_hint)
-            if status in ["found_exact", "found_by_context"]:
-                target_obj = res_target
-
-        # 2. 如果没锁定，先做一次初步分析看看笔记里提到了哪个项目
-        if not target_obj:
-            # 临时生成一个草稿来探探路 (取前 3 条笔记)
-            preview = architect_analyze(self.note_buffer[:3], self.api_key, self.endpoint_id, recorder=self.default_recorder)
-            if preview:
-                extracted_name = preview.get("project_opportunity", {}).get("project_name")
-                if extracted_name:
-                    res_target, candidates, status = self.resolve_target_interactive(extracted_name)
-                    if status in ["found_exact", "found_by_context"]:
-                        target_obj = res_target
-
-        # 3. 调用销售架构师进行最终处理
-        # 传入 target_obj (如果有) 进行合并，否则为新建
+        # 1. 调用销售架构师进行字段提取和解析
         result_json = architect_analyze(
             self.note_buffer, 
             self.api_key, 
             self.endpoint_id, 
-            original_data=target_obj, 
+            original_data=None,  # 总是新建，不传入旧数据
             recorder=self.default_recorder
         )
 
         if not result_json:
             return {"status": "error", "message": "AI 提交处理失败。"}
 
-        # 4. 查重判定 (如果是新建模式，可能还需要检查是否有同名项目)
-        status = "new"
-        linked_target = None
-        if target_obj:
-            status = "linked"
-            linked_target = {"id": target_obj["id"], "name": target_obj.get("project_name", "未知")}
-        else:
-            # 即使 architect 没拿到 original_json，它可能输出了一个已存在的项目名
-            # 这里再做最后一层保险
-            p_name = result_json.get("project_opportunity", {}).get("project_name")
-            if p_name:
-                matches = self.find_potential_matches(p_name)
-                for m in matches:
-                    if m["name"].strip().lower() == p_name.strip().lower():
-                        linked_target = m
-                        status = "linked"
-                        result_json["id"] = m["id"]
-                        break
+        # 2. 生成新的 UUID ID
+        if "id" not in result_json:
+            result_json["id"] = str(uuid.uuid4())
+        
+        # 3. 补全数据结构：确保project_opportunity中有project_name和opportunity_stage
+        if "project_opportunity" not in result_json:
+            result_json["project_opportunity"] = {}
+        
+        # 如果project_opportunity中没有project_name，从顶层复制
+        if "project_name" not in result_json.get("project_opportunity", {}):
+            result_json["project_opportunity"]["project_name"] = result_json.get("project_name")
+        
+        # 如果project_opportunity中没有opportunity_stage，从顶层复制
+        if "opportunity_stage" not in result_json.get("project_opportunity", {}):
+            result_json["project_opportunity"]["opportunity_stage"] = result_json.get("opportunity_stage")
 
         return {
-            "status": status,
+            "status": "new",
             "draft": result_json,
-            "linked_target": linked_target,
+            "linked_target": None,
             "missing_fields": self.get_missing_fields(result_json)
         }

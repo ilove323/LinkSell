@@ -250,22 +250,27 @@ def display_candidates(candidates: list) -> int:
 
 
 def process_user_input(user_input: str):
-    """只做输入输出，所有分支交engine统一入口"""
+    """分步处理用户输入，实时显示进度"""
     if not user_input.strip():
         return
+    
+    # 第一步：立即显示用户消息
     add_user_message(user_input)
     
-    # 显示加载占位符
-    loading_placeholder = st.empty()
-    with loading_placeholder.container():
-        st.info("🤔 思考中...", icon="ℹ️")
+    # 显示进度指示
+    with st.spinner("🤔 思考中..."):
+        # 第二步：处理输入（调用 handle_user_input）
+        result = st.session_state.engine.handle_user_input(user_input)
     
-    # 处理输入
-    result = st.session_state.engine.handle_user_input(user_input)
+    # 第三步：显示结果并保存到 session_state
+    _display_result(result)
     
-    # 清除加载占位符
-    loading_placeholder.empty()
-    
+    # 重新运行，刷新界面并保证所有消息持久化
+    st.rerun()
+
+
+def _display_result(result: dict):
+    """根据结果类型显示相应的内容"""
     result_type = result.get("type")
     if result_type == "detail":
         if result.get("auto_matched"):
@@ -276,12 +281,7 @@ def process_user_input(user_input: str):
         add_ai_message(f"📋 找到 {len(result.get('results', []))} 条商机")
         add_list_message(result.get('results', []), result.get('search_term', ''))
     elif result_type == "create":
-        add_ai_message(result.get("message", ""))
-        if result.get("missing_fields"):
-            add_ai_message("⚠️ 以下字段信息不完整：")
-            for field_key, (field_name, _) in result["missing_fields"].items():
-                add_ai_message(f"  - {field_name}")
-        add_report_message(result.get("draft"))
+        _handle_create_result(result)
     elif result_type == "update":
         add_ai_message(f"✅ {result.get('message','')}")
         add_report_message(result.get("data"))
@@ -367,31 +367,15 @@ def _handle_create_result(result: dict):
         add_ai_message(result["message"])
         
         if result.get("missing_fields"):
-            add_ai_message("⚠️ 以下字段信息不完整：")
+            add_ai_message("⚠️ 以下字段信息不完整，可以继续修改：")
             for field_key, (field_name, _) in result["missing_fields"].items():
                 add_ai_message(f"  - {field_name}")
         
         add_report_message(result["draft"])
         
-        st.session_state.pending_action = {
-            "type": "save_discard",
-            "data": result["draft"]
-        }
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ 确认保存"):
-                save_result = st.session_state.engine.confirm_save(result["draft"])
-                add_ai_message(save_result["message"])
-                st.session_state.pending_action = None
-                st.rerun()
-        
-        with col2:
-            if st.button("❌ 放弃修改"):
-                st.session_state.engine.discard_changes()
-                add_ai_message("已放弃修改")
-                st.session_state.pending_action = None
-                st.rerun()
+        # 已自动保存，不需要确认按钮
+        if result.get("saved"):
+            add_ai_message("💾 已自动保存商机至数据库")
     else:
         add_ai_message(f"❌ {result['message']}")
 
@@ -504,7 +488,6 @@ st.divider()
 user_input = st.chat_input("请输入您的需求...", key="main_chat_input")
 if user_input:
     process_user_input(user_input)
-    st.rerun()
 
 # 工具栏：语音录制 + 文件上传
 col_mic, col_upload, col_spacer = st.columns([1, 1.2, 10])
@@ -523,8 +506,8 @@ with col_upload:
         st.session_state.last_audio_file_id = None
     
     if uploaded_file:
-        # 计算文件ID来判断是否是新文件
-        file_id = f"{uploaded_file.name}_{uploaded_file.size}_{uploaded_file.modified_at}"
+        # 计算文件ID来判断是否是新文件（不使用 modified_at，改用 name 和 size）
+        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
         
         if st.session_state.last_audio_file_id != file_id:
             # 保存上传的文件
@@ -538,10 +521,14 @@ with col_upload:
                 try:
                     result = st.session_state.engine.handle_voice_input(str(tmp_path))
                     if result.get("status") == "success":
-                        st.session_state.voice_text = result.get("text", "")
+                        voice_text = result.get("text", "")
                         st.session_state.last_audio_file_id = file_id
-                        st.success("音频处理完成，已填充到输入框")
-                        st.rerun()
+                        
+                        if voice_text.strip():
+                            # 立即处理文本，就像用户直接输入一样
+                            process_user_input(voice_text)
+                        else:
+                            st.warning("音频处理成功但未识别到文字")
                     else:
                         st.error(f"处理失败: {result.get('message', '未知错误')}")
                 except Exception as e:

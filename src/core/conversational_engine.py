@@ -101,9 +101,13 @@ class ConversationalEngine:
         }
     
     # ==================== CREATE 意图 ====================
-    def handle_create(self, project_name_hint: str = "") -> dict:
+    def handle_create(self, project_name_hint: str = "", auto_save: bool = True) -> dict:
         """
         处理CREATE意图：正式录入/提交商机
+        
+        参数：
+        - project_name_hint: 项目名提示
+        - auto_save: 如果为True，则自动保存商机；否则需要用户确认
         
         返回格式：
         {
@@ -112,6 +116,7 @@ class ConversationalEngine:
             "draft": {...},  # 生成的草稿数据
             "linked_target": {...},  # 当status==linked时存在，关联的目标
             "missing_fields": {...}  # 缺失的字段
+            "saved": True/False  # 是否已保存到磁盘
         }
         """
         result_pkg = self.controller.process_commit_request(project_name_hint)
@@ -120,37 +125,33 @@ class ConversationalEngine:
             return {
                 "status": "error",
                 "message": result_pkg.get("message", "处理失败"),
-                "draft": None
+                "draft": None,
+                "saved": False
             }
         
         draft = result_pkg["draft"]
         status = result_pkg["status"]
         
-        # 关联到现有商机或新建
-        if status == "linked":
-            match = result_pkg["linked_target"]
-            self.current_opp_id = match["id"]
-            old_data = self.controller.get_opportunity_by_id(match["id"])
-            if old_data:
-                draft = self.controller.merge_draft_into_old(old_data, draft)
-        else:
-            self.current_opp_id = None
-        
-        # 存入暂存区
+        # 只处理新建商机
+        self.current_opp_id = draft.get("id")
         self.staged_data = draft
-        
-        # 获取缺失字段
         missing_fields = self.controller.get_missing_fields(draft)
-        
-        # 清空笔记缓冲
         self.controller.clear_note_buffer()
-        
+        saved = False
+        save_message = ""
+        if auto_save:
+            success = self.controller.overwrite_opportunity(draft)
+            if success:
+                saved = True
+                proj_name = draft.get("project_opportunity", {}).get("project_name", "商机")
+                save_message = f"\n✅ 已自动保存至 {proj_name}"
         return {
-            "status": status,  # "linked" 或 "new"
-            "message": self._generate_create_message(status, draft),
+            "status": status,  # 只会是"new"
+            "message": self._generate_create_message(status, draft) + save_message,
             "draft": draft,
-            "linked_target": result_pkg.get("linked_target"),
-            "missing_fields": missing_fields
+            "linked_target": None,
+            "missing_fields": missing_fields,
+            "saved": saved
         }
     
     def _generate_create_message(self, status: str, draft: dict) -> str:
