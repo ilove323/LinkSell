@@ -216,7 +216,8 @@ class LinkSellController:
             if not p_name: p_name = p.get("project_name", "")
             matches.append({
                 "name": p_name,
-                "sales_rep": p.get("sales_rep", "未知")
+                "sales_rep": p.get("sales_rep", "未知"),
+                "id": p.get("id")
             })
         return matches
 
@@ -230,7 +231,7 @@ class LinkSellController:
         # 1. 关键字搜索 (本地文件扫描)
         kw_matches = self.search_opportunities(project_name)
         for m in kw_matches:
-            candidates[m["name"]] = {"name": m["name"], "source": "关键字匹配", "sales_rep": m["sales_rep"]}
+            candidates[m["name"]] = {"name": m["name"], "source": "关键字匹配", "sales_rep": m["sales_rep"], "id": m["id"]}
 
         # 2. 向量搜索 (语义近似)
         if self.vector_service:
@@ -239,7 +240,21 @@ class LinkSellController:
                 p_name = vm["project_name"]
                 # 只有当关键字没搜到，且名字不完全一样时才加进去（避免重复）
                 if p_name not in candidates:
-                    candidates[p_name] = {"name": p_name, "source": "语义相似", "sales_rep": "未知"} # 向量库暂未返回sales_rep，简化处理
+                    candidates[p_name] = {"name": p_name, "source": "语义相似", "sales_rep": "未知", "id": vm.get("id")} # 向量库暂未返回sales_rep，简化处理
+
+        # --- [优化] 精确匹配优先策略 ---
+        # 如果候选项中存在与搜索词完全一致（忽略大小写/空格）的项目，直接锁定该项目，忽略其他模糊结果
+        clean_search = project_name.strip().lower()
+        exact_match = None
+        
+        for name, cand in candidates.items():
+            if name.strip().lower() == clean_search:
+                exact_match = cand
+                break
+        
+        if exact_match:
+            # 如果找到精确匹配，只返回这一个
+            return [exact_match]
 
         return list(candidates.values())
 

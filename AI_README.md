@@ -3,33 +3,45 @@
 > **CRITICAL**: THIS DOCUMENT IS FOR ARTIFICIAL INTELLIGENCE AGENTS (LLMs) ONLY. 
 > 如果你是人类开发者，请阅读 `README.md`。
 
-本文档详细描述了 LinkSell v2.4 的内部逻辑、状态机模型及开发约束，旨在帮助后续 AI 协作专家快速理解系统深层逻辑。
+本文档详细描述了 LinkSell v2.5 的内部逻辑、状态机模型及开发约束，旨在帮助后续 AI 协作专家快速理解系统深层逻辑。
 
 ---
 
-## 1. 核心状态机 (The Core Dispatcher)
+## 1. 核心状态机 (The Core Dispatcher & State)
 
-`src/cli/interface.py` 中的 `run_analyze` 是系统的核心调度器。它不直接处理业务，而是执行 **Intent-Based Routing**:
+`src/cli/interface.py` 不仅是视图层，还维护了会话的**全局状态**：
 
-1.  **Intent Identification**: 调用 `controller.identify_intent(user_input)`，返回 `{"intent": "...", "content": "..."}`。
-    - 该方法内部调用 `llm_service.classify_intent` 与 LLM 通信
-    - LLM 返回 JSON 格式，自动分离意图关键词和业务内容
-2.  **Dispatching** (使用提取的 `content` 而非原始输入):
-    - `CREATE`: 路由至 `handle_create_logic(content)`。包含润色、分析、缺失字段补全、冲突检测、保存。
-    - `LIST`: 路由至 `handle_list_logic(content)`。使用 `content` 作为搜索关键词执行本地检索。
-    - `GET/UPDATE/DELETE`: 使用 `content` 调用 `_resolve_target_strictly` 锁定目标，然后执行相应操作。
-3.  **OTHER**: 从 `ui_templates.json` 抽取回复，拒绝非业务请求。
+### 1.1 全局变量
+- `current_opp_id`: (str|None) 存储当前用户正在查看或操作的商机 ID。
+    - **Set via GET**: 当 `handle_get_logic` 成功解析目标时，**静默更新**此变量。
+    - **Used by UPDATE**: 当 `handle_update_logic` 检测到模糊指令（Vague Instruction）时，自动使用此 ID 作为目标。
+
+### 1.2 路由逻辑 (Intent-Based Routing)
+1.  **Intent Identification**: 调用 `controller.identify_intent` 获取 `intent` 和 `content`。
+2.  **Dispatching**:
+    - `CREATE`: 路由至 `handle_create_logic`。
+    - `GET`: 路由至 `handle_get_logic` -> 更新 `current_opp_id` -> **无交互退出**。
+    - `UPDATE`: 路由至 `handle_update_logic` -> 检查 `search_term` -> 若模糊则使用 `current_opp_id` -> 若无 ID 则进入搜索 -> 更新 `current_opp_id`。
+    - `LIST/DELETE`: 标准路由。
 
 ---
 
-## 2. 目标解析闭环 (The Resolve Loop)
+## 2. 目标解析与交互 (Resolution & Interaction)
 
-`_resolve_target_strictly(extracted_content)` 是确保数据一致性的核心机制。注意：传入的是从 `identify_intent` 返回的 `content` 字段（已去掉意图关键词），而非原始用户输入。其递归逻辑如下：
-1.  **直接搜索**: 使用 `extracted_content` 调用 `find_potential_matches`（关键词模糊匹配 + 语义向量匹配）。
-2.  **结果收敛**:
-    - **0 结果**: 引导用户重新输入关键词或退出。
-    - **1 结果**: 锁定目标并返回。
-    - **N 结果**: 展示列表，要求输入 **[序号]**。若用户输入了 **[文字]**，则视为新的关键词搜索，重新开始循环。
+`_resolve_target_strictly(extracted_content)` 及各 Handler 遵循 **"Real ID Only"** 原则。
+
+### 2.1 废除序号 (No Index Selection)
+- 系统不再显示 `[1], [2], [3]` 的序号列表。
+- 系统显示 `- [ID] : Project Name`。
+- 用户必须输入 **真实 ID** 或特定指令（如 `N` 新建）。
+
+### 2.2 CREATE 流程的特殊分流
+在 `handle_create_logic` 中：
+- **Detection**: 自动搜索疑似旧项目。
+- **Action**: 用户输入 `ID` 关联，或输入 `N` 新建。
+- **Conflict Check**:
+    - **Core Fields** (Budget, Stage, etc.): 弹出冲突提示，询问是否覆盖。
+    - **Follow-up Note** (Summary): **直接追加**至 `record_logs`，不触发冲突检查。
 
 ---
 
@@ -37,39 +49,35 @@
 
 | 文件名 | 调用方法 (Controller) | 业务逻辑 |
 | :--- | :--- | :--- |
-| `classify_intent.txt` | `identify_intent` → `classify_intent` (LLM) | **一步到位**：五大意图分流 + 内容提取，返回 JSON `{"intent": "...", "content": "..."}` |
-| `extract_search_term.txt` | ~~`extract_search_term`~~ | **已废弃**：内容提取现已整合至 `classify_intent.txt` |
-| `normalize_input.txt` | `normalize_input` | 填空题规范化 (处理 NULL、格式化金额/日期) |
-| `judge_save.txt` | `judge_user_affirmative` | 全局布尔逻辑判决 |
-| `analyze_sales.txt` | `analyze` | 销售对话结构化提取 |
-| `update_sales.txt` | `update` | 自然语言驱动的 JSON 局部更新 |
-| `polish_text.txt` | `polish` | 录音转写文本去燥润色 |
+| `classify_intent.txt` | `identify_intent` | 意图分流 + 内容提取。返回 JSON。 |
+| `extract_search_term.txt` | `extract_search_term` | **辅助工具**：用于 UPDATE 流程中判断用户是否指明了具体项目（Vague Check）。 |
+| `normalize_input.txt` | `normalize_input` | 填空题规范化 (处理 NULL、格式化金额/日期)。 |
+| `judge_save.txt` | `judge_user_affirmative` | 全局布尔逻辑判决。 |
+| `analyze_sales.txt` | `analyze` | 销售对话结构化提取。 |
+| `update_sales.txt` | `update` | 自然语言驱动的 JSON 局部更新。 |
+| `polish_text.txt` | `polish` | 录音转写文本去燥润色。 |
 
 ---
 
 ## 4. 开发红线 (Hard Rules for AI)
 
 ### 4.1 状态管理 (State Integrity)
-- **Metadata Inheritance**: 在 `controller.update` 中，必须手动将 `original_data` 的元数据（`id`, `_file_path`, `_temp_id`, `created_at`, `record_logs`）拷贝至 LLM 返回的新对象中。**严禁丢失系统级字段。**
-- **Atomic Operations**: `overwrite_opportunity` 必须确保文件变更与向量库更新同步。
+- **Silent GET**: `handle_get_logic` **严禁**包含任何阻塞式交互（如 "按 E 编辑"），也不应打印 "已锁定 ID" 等调试信息。它只负责展示数据和更新变量。
+- **Global ID Sync**: 任何成功解析出唯一目标的操作（GET, UPDATE, CREATE-Associate），都应更新 `current_opp_id`。
 
 ### 4.2 交互规范
-- **Intent + Content Pattern**: 所有与用户的意图识别必须使用 `controller.identify_intent(user_input)` 返回的 `content` 字段，而非原始 `user_input`。`content` 是经过 LLM 清洗过的、去掉了意图关键词的业务内容。
-- **Randomized UI**: 严禁在 `interface.py` 或 `app.py` 中硬编码字符串。必须使用 `get_random_ui(key)` 从 `config/ui_templates.json` 获取语料。
-- **Strict Normalization**: 所有 `typer.prompt` 的返回值，若涉及字段填空，必须经过 `controller.normalize_input` 过滤。
+- **Real IDs**: 所有的列表展示、选择逻辑必须基于真实 ID（字符串/时间戳）。严禁引入临时的 `enumerate` 索引。
+- **Vague Check**: UPDATE 逻辑必须优先检查用户输入是否包含具体实体。只有在“未提取到实体”且“有全局 ID”时，才自动关联。
 
 ### 4.3 存储逻辑
-- **File-per-Opp**: 严禁将所有商机存入同一个文件。数据必须以 `{project_name}.json` 形式分布存储。
-- **Conflict Management**: `detect_data_conflicts` 用于检测新旧数据的结构性冲突，必须在 `CREATE` 流程中优先处理。
+- **Atomic Rename**: 修改项目名称时，必须保证文件重命名与向量库更新的一致性（已在 `controller.update` 实现）。
 
 ---
 
 ## 5. 常见 Debug 路径
-- **NameError in CLI**: 检查 `interface.py` 的变量名拼写（注意 Unicode 字符干扰）。
-- **Edit behaves like Copy**: 检查 `update` 方法是否丢失了 `_file_path`。
-- **Intent classification errors**: 检查 `classify_intent.txt` 的提示词是否清晰、例子是否完整。若 LLM 返回非 JSON 格式，检查 `classify_intent()` 的 JSON 解析逻辑。
-- **Wrong content extraction**: 验证 `content` 字段是否正确去掉了意图关键词。可在 `controller.identify_intent` 的返回值处打印调试。
-- **Search not finding targets**: 确保传给 `_resolve_target_strictly` 的是从 `identify_intent` 返回的 `content`，而非原始输入。
+- **"KeyError: 'id'"**: 检查列表展示逻辑是否使用了旧的 `_temp_id`。现在应直接使用 `id`。
+- **Context Lost**: 检查 `handle_get_logic` 是否正确声明了 `global current_opp_id` 并赋值。
+- **Infinite Loop in Create**: 检查 `choice` 判断逻辑，确保 `N` (新建) 和 `ID` (关联) 都有明确的退出路径。
 
 ---
 *End of Context.*

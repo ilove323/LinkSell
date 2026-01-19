@@ -13,6 +13,8 @@ from src.core.controller import LinkSellController
 console = Console()
 controller = LinkSellController()
 cli_app = typer.Typer()
+current_opp_id = None # 全局变量：记录当前正在查看的商机 ID
+staged_data = None    # 全局变量：暂存待保存的数据 (Staging Area)
 
 # --- UI Template Loader (CLI Specific) ---
 ui_templates = {}
@@ -230,12 +232,11 @@ def _interactive_review_loop(data: dict, save_handler, is_new=False):
 
 def _resolve_target_strictly(raw_input: str):
     """
-    核心组件：严格目标解析器。
-    根据用户输入，锁定唯一的商机对象。如果不能锁定，则进入交互搜索或返回 None。
-    1. 提取搜索词 (LLM)
-    2. 搜索 (Local + Vector)
-    3. 交互选择 (Loop)
-    返回: target_opp (dict) or None
+    核心组件：严格目标解析器 (无状态版)。
+    根据用户输入，尝试锁定唯一的商机对象。
+    - 唯一匹配 -> 返回 target
+    - 多项匹配 -> 展示列表 -> 返回 None
+    - 无匹配 -> 返回 None
     """
     # 1. 规范化输入：提取项目名
     search_term = controller.extract_search_term(raw_input)
@@ -244,43 +245,27 @@ def _resolve_target_strictly(raw_input: str):
     
     console.print(f"[dim]正在搜索目标：'{search_term}'...[/dim]")
     
-    while True:
-        # 2. 执行搜索
-        candidates = controller.find_potential_matches(search_term)
+    # 2. 执行搜索
+    candidates = controller.find_potential_matches(search_term)
+    
+    # 3. 结果判定
+    if not candidates:
+        console.print(f"[yellow]未找到与 '{search_term}' 相关的商机。[/yellow]")
+        return None
         
-        # 3. 结果判定
-        if not candidates:
-            console.print(f"[yellow]未找到与 '{search_term}' 相关的商机。[/yellow]")
-            # 询问是否重新搜索
-            retry = typer.prompt("请输入更准确的项目名称，或输入 'q' 退出")
-            if retry.lower() in ['q', 'quit', 'exit']: return None
-            search_term = retry # 更新搜索词，再次循环
-            continue
-            
-        if len(candidates) == 1:
-            # 唯一匹配，直接锁定
-            # TODO: 可以加一步确认 "您是指 [项目名] 吗？"
-            target = controller.get_opportunity_by_id(candidates[0]["id"])
-            return target
-            
-        # 4. 多结果交互选择
-        console.print(Panel(f"[yellow]找到多个相关商机，请选择：[/yellow]", style="yellow"))
-        for i, cand in enumerate(candidates):
-            console.print(f"[{i+1}] {cand['name']} ([dim]{cand.get('source', '')}[/dim])")
+    if len(candidates) == 1:
+        # 唯一匹配，直接锁定
+        target = controller.get_opportunity_by_id(candidates[0]["id"])
+        return target
         
-        choice = typer.prompt("请输入序号选择，或输入新的搜索词")
-        
-        if choice.isdigit():
-            idx = int(choice)
-            if 1 <= idx <= len(candidates):
-                target = controller.get_opportunity_by_id(candidates[idx-1]["id"])
-                return target
-            else:
-                console.print("[red]无效序号。[/red]")
-        else:
-            # 用户输入了文字，视为修正搜索词
-            search_term = choice
-            continue
+    # 4. 多结果展示 (无交互)
+    console.print(Panel(f"[yellow]找到多个相关商机，请提供更精确的名称或直接使用 ID：[/yellow]", style="yellow"))
+    for cand in candidates:
+        # 安全获取 ID
+        cid = cand.get('id', '无ID')
+        console.print(f"- [bold cyan]{cid}[/bold cyan] : {cand['name']} ([dim]{cand.get('source', '')}[/dim])")
+    
+    return None
 
 # --- Main Logic Handlers ---
 
@@ -311,13 +296,13 @@ def handle_list_logic(content):
     
     if results:
         table = Table(title=f"搜索结果 ({len(results)}条)", show_header=True, header_style="bold magenta")
-        table.add_column("ID", width=4)
+        table.add_column("ID", width=12)
         table.add_column("项目名称")
         table.add_column("阶段")
         table.add_column("销售")
         
         for opp in results:
-            pid = str(opp.get("_temp_id", "?"))
+            pid = str(opp.get("id", "未知"))
             pname = _safe_str(opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知")))
             stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
             stage_name = _safe_str(controller.stage_map.get(stage_code, stage_code))
@@ -328,110 +313,95 @@ def handle_list_logic(content):
         console.print("[yellow]空空如也。[/yellow]")
 
 def handle_create_logic(content):
-    """处理 CREATE 意图 (原 Analyze 流程)"""
-    # 0. 确认意图：如果是录入，先问一句，防止误触发
-    if content:
-        # 秘书腔调询问
-        if not controller.judge_user_affirmative(typer.prompt(get_random_ui("ask_create_opportunity"), default="Y")):
-            console.print(f"[dim]{get_random_ui('operation_cancel')}[/dim]")
-            return
-
+    """处理 CREATE 意图 (无状态/暂存模式)"""
+    global staged_data, current_opp_id
+    
+    # 1. 润色 & 分析
     console.print(Panel(f"[bold cyan]{get_random_ui('polishing_start')}[/bold cyan]", style="cyan"))
     polished = controller.polish(content)
-    console.print(Panel(polished, title="[bold green]整理后的文本[/bold green]"))
+    # console.print(Panel(polished, title="[bold green]整理后的文本[/bold green]")) # 简化输出
 
     console.print(Panel(f"[bold yellow]{get_random_ui('analysis_start')}[/bold yellow]", title="处理中"))
     result = controller.analyze(polished)
     if not result: console.print("[red]分析失败。[/red]"); return
 
-    result = check_and_fill_missing_fields(result)
-
-    # 项目关联检查 (CREATE 特有)
+    # 2. 自动关联检查 (仅精确匹配)
     extracted_proj_name = result.get("project_opportunity", {}).get("project_name")
     if extracted_proj_name:
-        console.print(f"[dim]系统识别项目名：{extracted_proj_name}[/dim]")
-        
-        # 这里的关联逻辑稍微不同，因为要允许新建，所以不用 _resolve_target_strictly
-        # 但为了复用，我们可以简单搜一下
+        # find_potential_matches 现已支持精确匹配优先
         candidates = controller.find_potential_matches(extracted_proj_name)
-        
-        if candidates:
-            console.print(Panel(f"[yellow]发现疑似旧项目，要关联吗？[/yellow]", style="yellow"))
-            for i, cand in enumerate(candidates):
-                console.print(f"[{i+1}] {cand['name']}")
-            console.print(f"[{len(candidates)+1}] [bold green]新建：{extracted_proj_name}[/bold green]")
+        # 如果第一个候选项名字完全一样 (忽略大小写)，则自动关联
+        if candidates and candidates[0]["name"].strip().lower() == extracted_proj_name.strip().lower():
+            match = candidates[0]
+            result["id"] = match["id"]
+            # 强行同步名字以防微小差异
+            if "project_opportunity" not in result: result["project_opportunity"] = {}
+            result["project_opportunity"]["project_name"] = match["name"]
             
-            while True:
-                choice = typer.prompt("请输入序号")
-                if choice.isdigit():
-                    idx = int(choice)
-                    if 1 <= idx <= len(candidates):
-                        # 关联旧项目 -> 冲突检测
-                        old_data = controller.get_opportunity_by_id(candidates[idx-1]["id"])
-                        selected_name = old_data.get("project_opportunity", {}).get("project_name")
-                        console.print(f"已关联：[green]{selected_name}[/green]")
-                        
-                        conflicts = controller.detect_data_conflicts(old_data, result)
-                        if conflicts:
-                            console.print(Panel(f"[yellow]⚠️ 检测到 {len(conflicts)} 处冲突[/yellow]", style="yellow"))
-                            for cat, key, label, old_val, new_val in conflicts:
-                                if controller.judge_user_affirmative(typer.prompt(f"{label}: 原[{old_val}] -> 新[{new_val}]。覆盖吗？")):
-                                    console.print("-> 已覆盖")
-                                else:
-                                    # 回滚
-                                    if cat not in result: result[cat] = {}
-                                    result[cat][key] = old_val
-                        
-                        result["project_opportunity"]["project_name"] = selected_name
-                        break
-                    elif idx == len(candidates) + 1:
-                        console.print("确认新建。")
-                        break
-                console.print("无效输入")
+            current_opp_id = match["id"]
+            console.print(f"[dim]已自动关联现有项目: {match['name']} (ID: {match['id']})[/dim]")
+        else:
+            # 是个新项目，重置全局 ID (因为还没存，没有真实 ID)
+            current_opp_id = None
+            console.print("[dim]识别为新项目草稿。[/dim]")
 
-    # 进入保存/审查循环
-    def create_save_handler(data):
-        rid, _ = controller.save(data, polished) # 传入润色文本用于日志
-        return True, get_random_ui('db_save_success', record_id=rid)
+    # 3. 缺失字段告知 (不追问)
+    missing = controller.get_missing_fields(result)
+    if missing:
+        msg = "[yellow]⚠️  当前草稿缺失以下关键信息：[/yellow]\n"
+        for k, (name, _) in missing.items():
+            msg += f"- {name}\n"
+        console.print(Panel(msg, style="yellow"))
 
-    _interactive_review_loop(result, create_save_handler, is_new=True)
+    # 4. 存入暂存区
+    staged_data = result
+    
+    # 5. 展示结果
+    display_result_human_readable(staged_data)
+    console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 或 '保存' 即可写入数据库。[/bold green]")
 
 def handle_get_logic(content):
     """处理 GET 意图"""
+    global current_opp_id
     target = _resolve_target_strictly(content)
     if target:
         console.clear()
         display_result_human_readable(target)
-        # 简单后续菜单
-        act = typer.prompt("\n后续操作: [E]编辑 / [D]删除 / [Q]退出", default="Q").strip().upper()
-        if act == "E":
-            def save_handler(data):
-                return controller.overwrite_opportunity(data), "修改已保存"
-            _interactive_review_loop(target, save_handler)
-        elif act == "D":
-            if typer.confirm("确认删除？"):
-                controller.delete_opportunity(target.get("id"))
-                console.print("已删除")
+        current_opp_id = target.get("id")
 
 def handle_update_logic(content):
-    """处理 UPDATE 意图"""
-    target = _resolve_target_strictly(content)
+    """处理 UPDATE 意图 (无状态/暂存模式)"""
+    global staged_data, current_opp_id
+    target = None
+    
+    # 1. 别急着搜，先瞅瞅是不是在说当前锁定的这哥们儿
+    search_term = controller.extract_search_term(content)
+    
+    # 如果抠不出具体的项目名，或者用户只是泛泛而谈，且咱们手里有锁定好的 ID
+    is_vague = not search_term or any(k in search_term.lower() for k in ["unknown", "记录", "项目", "修改", "更新", "内容"])
+    
+    if is_vague and current_opp_id:
+        target = controller.get_opportunity_by_id(current_opp_id)
+        if target:
+            console.print(f"[dim]未检测到明确对象，已自动锁定当前商机：{target.get('project_opportunity',{}).get('project_name')}[/dim]")
+    
+    # 2. 如果还是没锁定，老老实实走严格解析流程（会进交互搜索，但这是定位必须的）
+    if not target:
+        target = _resolve_target_strictly(content)
+        
     if not target: return
     
-    # 获取修改指令 (如果是 "把A改成B" 这种带指令的输入，可以直接用；否则问用户)
-    # 简单起见，我们认为 content 本身可能包含了指令，但也可能只是 "修改xx项目"
-    # 这里我们直接进入 review loop，让用户在里面输入修改指令，或者先把 content 传进去试着 update 一次
+    # 3. 执行更新 (纯逻辑，不存盘)
+    console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
+    updated_result = controller.update(target, content)
     
-    console.print(f"[green]已锁定项目：{target.get('project_opportunity', {}).get('project_name')}[/green]")
+    # 4. 存入暂存区
+    staged_data = updated_result
+    current_opp_id = updated_result.get("id")
     
-    # 尝试用当前输入作为第一条指令进行修改
-    # 但因为 content 包含 "修改xx项目"，直接丢给 update 可能会产生副作用
-    # 稳妥起见，直接进入交互界面
-    
-    def save_handler(data):
-        return controller.overwrite_opportunity(data), "修改已保存"
-    
-    _interactive_review_loop(target, save_handler, is_new=False)
+    # 5. 展示结果
+    display_result_human_readable(staged_data)
+    console.print("[bold green]✅ 修改已暂存。输入 'SAVE' 或 '保存' 即可写入数据库。[/bold green]")
 
 def handle_delete_logic(content):
     """处理 DELETE 意图"""
@@ -459,13 +429,13 @@ def manage():
         console.print(Panel("[bold green]LinkSell 商机管理控制台[/bold green]", style="bold green"))
         all_opps = controller.get_all_opportunities()
         table = Table(show_header=True, header_style="bold magenta", box=None)
-        table.add_column("ID", style="dim", width=4)
+        table.add_column("ID", style="dim", width=12)
         table.add_column("项目名称", style="bold")
         table.add_column("销售", width=8)
         table.add_column("阶段", width=8)
         table.add_column("更新时间", style="dim")
         for opp in all_opps:
-             pid = str(opp.get("_temp_id", "?"))
+             pid = str(opp.get("id", "未知"))
              pname = _safe_str(opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知")))
              sales = _safe_str(opp.get("sales_rep", "-"))
              stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
@@ -473,7 +443,7 @@ def manage():
              time_str = _safe_str(opp.get("updated_at", ""))[:10]
              table.add_row(pid, pname, sales, stage_name, time_str)
         console.print(table)
-        console.print("\n[dim]提示：输入 'E 1' 编辑ID为1的记录，'D 1' 删除ID为1的记录[/dim]")
+        console.print("\n[dim]提示：输入 'E <ID>' 编辑记录，'D <ID>' 删除记录[/dim]")
         action = typer.prompt("请选择操作: [N]新建 / [E]编辑 / [D]删除 / [Q]退出").strip().upper()
         if action == "Q": break
         if action == "N": handle_create_logic("") # Reuse
@@ -493,6 +463,8 @@ def manage():
 @cli_app.command()
 def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = False, save: bool = False, debug: bool = False):
     """CLI 核心分析流程 (Refactored Intent Dispatcher)"""
+    global staged_data, current_opp_id
+    
     # 处理初始输入（来自命令行参数）
     if use_mic:
         mic_path = Path("data/tmp") / f"mic_{int(time.time())}.wav"
@@ -513,6 +485,26 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
         if content.strip().lower() in ["quit", "exit", "q", "退出"]:
             console.print("[dim]已退出分析模式。[/dim]")
             break
+            
+        # --- 拦截 SAVE 指令 ---
+        if content.strip().lower() in ["save", "保存", "存", "s"]:
+            if staged_data:
+                # 执行保存
+                # 注意：controller.save 内部处理了新建和更新逻辑 (依靠 ID 判断)
+                # 这里我们假设 staged_data 已经是完整的对象
+                # 为了兼容 controller.save 的参数签名 (record, raw_content)，这里 raw_content 传空即可，因为摘要已生成
+                rid, fpath = controller.save(staged_data, raw_content="")
+                
+                console.print(f"[bold green]{get_random_ui('db_save_success', record_id=rid)}[/bold green]")
+                current_opp_id = rid
+                staged_data = None # 清空暂存区
+            else:
+                console.print("[yellow]暂存区为空，没有可保存的内容。[/yellow]")
+            
+            # 重新获取输入，跳过后续意图识别
+            console.print("")
+            content = typer.prompt("请输入内容")
+            continue
         
         # 1. 意图识别 (The Brain) - 返回 {"intent": "...", "content": "..."}
         with console.status("[bold yellow]正在分析您的意图...", spinner="dots"):
