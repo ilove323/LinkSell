@@ -322,30 +322,134 @@ class LinkSellController:
 
     def merge(self, data: dict, note_content: str) -> dict:
         """
-        MERGE 流程：将笔记追加到record_logs（不修改其他字段）
+        MERGE 流程：智能合并笔记到商机
         
-        用于: SAVE 意图，纯追加小记
-        返回: 更新后的商机数据（包含新增的record_log条目）
+        逻辑：
+        1. 解析笔记内容，提取结构化字段
+        2. 对比原商机，逐字段更新（若解析后非空且与原不同）
+        3. action_items 和 key_points 执行追加（不覆盖）
+        4. 最后添加 record_log 记录本次笔记
+        
+        返回: 更新后的商机数据
         """
+        from src.services.llm_service import architect_analyze
         import datetime
         now = datetime.datetime.now()
         
-        # 初始化 record_logs（如果不存在）
-        if "record_logs" not in data:
-            data["record_logs"] = []
+        # 步骤1：解析笔记，提取结构化数据
+        parsed_data = architect_analyze(
+            [note_content],
+            self.api_key,
+            self.endpoint_id,
+            original_data=data,
+            recorder=self.default_recorder
+        )
         
-        # 创建新的log条目
+        if not parsed_data:
+            # 解析失败，只添加到 record_logs，不更新其他字段
+            if "record_logs" not in data:
+                data["record_logs"] = []
+            new_log_entry = {
+                "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "recorder": self.default_recorder,
+                "content": note_content
+            }
+            data["record_logs"].append(new_log_entry)
+            data["updated_at"] = now.isoformat()
+            return data
+        
+        # 步骤2：对比并智能更新字段
+        merged = data.copy()
+        
+        # 2.1 更新顶层字段（除了 project_opportunity）
+        merge_fields = [
+            "project_name", "summary", "customer_info", 
+            "sentiment", "current_log_entry"
+        ]
+        
+        for field in merge_fields:
+            if field in parsed_data:
+                new_val = parsed_data[field]
+                # 检查：非空且与原数据不同，则更新
+                if new_val and new_val != merged.get(field):
+                    merged[field] = new_val
+        
+        # 2.1.1 特殊处理 opportunity_stage（必须在顶层，确保类型为整数）
+        stage_val = None
+        if "opportunity_stage" in parsed_data:
+            stage_val = parsed_data["opportunity_stage"]
+        elif "project_opportunity" in parsed_data and isinstance(parsed_data.get("project_opportunity"), dict) and "opportunity_stage" in parsed_data["project_opportunity"]:
+            # 备选方案：如果在 project_opportunity 中，也提取出来
+            stage_val = parsed_data["project_opportunity"]["opportunity_stage"]
+        
+        # 如果获取到新阶段值（类型转换为整数），且不同于原值，则更新顶层的 opportunity_stage
+        if stage_val is not None:
+            try:
+                # 尝试转换为整数（如果是字符串"2"，转为2）
+                if isinstance(stage_val, str):
+                    stage_val = int(stage_val)
+                current_stage = merged.get("opportunity_stage")
+                if stage_val != current_stage:
+                    merged["opportunity_stage"] = stage_val
+                    # 同时更新 project_opportunity 中的 opportunity_stage（如果存在）以保持一致性
+                    if "project_opportunity" in merged and isinstance(merged["project_opportunity"], dict):
+                        merged["project_opportunity"]["opportunity_stage"] = stage_val
+            except (ValueError, TypeError):
+                # 如果转换失败，跳过该字段
+                pass
+        
+        # 2.2 更新 project_opportunity（嵌套字段）
+        if "project_opportunity" in parsed_data:
+            if "project_opportunity" not in merged:
+                merged["project_opportunity"] = {}
+            
+            parsed_opp = parsed_data["project_opportunity"]
+            current_opp = merged["project_opportunity"]
+            
+            # 对 project_opportunity 中的字段进行更新（除了 action_items 和 key_points）
+            opp_merge_fields = [
+                "project_name", "budget", "timeline", "procurement_process",
+                "payment_terms", "competitors", "technical_staff", "sentiment"
+            ]
+            
+            for field in opp_merge_fields:
+                if field in parsed_opp:
+                    new_val = parsed_opp[field]
+                    if new_val and new_val != current_opp.get(field):
+                        current_opp[field] = new_val
+            
+            # 2.3 特殊处理：action_items 和 key_points 执行追加
+            if "action_items" in parsed_opp and parsed_opp["action_items"]:
+                if "action_items" not in current_opp:
+                    current_opp["action_items"] = []
+                # 去重后追加（避免重复）
+                existing_items = set(current_opp["action_items"])
+                for item in parsed_opp["action_items"]:
+                    if item not in existing_items:
+                        current_opp["action_items"].append(item)
+            
+            if "key_points" in parsed_opp and parsed_opp["key_points"]:
+                if "key_points" not in current_opp:
+                    current_opp["key_points"] = []
+                # 去重后追加
+                existing_points = set(current_opp["key_points"])
+                for point in parsed_opp["key_points"]:
+                    if point not in existing_points:
+                        current_opp["key_points"].append(point)
+        
+        # 步骤3：添加 record_log 记录本次笔记
+        if "record_logs" not in merged:
+            merged["record_logs"] = []
+        
         new_log_entry = {
             "time": now.strftime("%Y-%m-%d %H:%M:%S"),
             "recorder": self.default_recorder,
             "content": note_content
         }
+        merged["record_logs"].append(new_log_entry)
+        merged["updated_at"] = now.isoformat()
         
-        # 追加到record_logs
-        data["record_logs"].append(new_log_entry)
-        data["updated_at"] = now.isoformat()
-        
-        return data
+        return merged
 
     def replace(self, data, instruction):
         """
@@ -375,10 +479,23 @@ class LinkSellController:
             updated_data["project_opportunity"]["project_name"] = outer_name
             
         # --- 保留系统级元数据 (保留) ---
-        meta_keys = ["id", "_file_path", "_temp_id", "created_at", "record_logs", "updated_at"]
+        meta_keys = ["id", "_file_path", "_temp_id", "created_at", "record_logs", "updated_at", "recorder"]
         for k in meta_keys:
             if k in data and k not in updated_data:
                 updated_data[k] = data[k]
+        
+        # --- 为兼容性，确保 sales_rep 字段与 recorder 同步 ---
+        # 优先级：LLM返回的sales_rep > recorder值
+        if "sales_rep" not in updated_data:
+            # 如果LLM没有提取sales_rep，使用recorder值保持一致
+            if "recorder" in updated_data:
+                updated_data["sales_rep"] = updated_data["recorder"]
+            elif "recorder" in data:
+                updated_data["sales_rep"] = data["recorder"]
+        
+        # 如果修改了sales_rep，也同步到recorder（保持一致性）
+        if "sales_rep" in updated_data and "recorder" not in updated_data:
+            updated_data["recorder"] = updated_data["sales_rep"]
         
         # --- [原子操作]：如果修改了商机名称，处理文件重命名 (保留) ---
         old_proj_name = data.get("project_opportunity", {}).get("project_name")
@@ -651,6 +768,14 @@ class LinkSellController:
         save_data = new_data.copy()
         save_data.pop("_temp_id", None)
         save_data.pop("_file_path", None)
+        
+        # --- 兼容性处理：确保 sales_rep 与 recorder 同步 ---
+        if "sales_rep" in save_data and "recorder" not in save_data:
+            # 如果修改了sales_rep，也同步到recorder
+            save_data["recorder"] = save_data["sales_rep"]
+        elif "recorder" in save_data and "sales_rep" not in save_data:
+            # 反向：如果有recorder，确保sales_rep存在
+            save_data["sales_rep"] = save_data["recorder"]
         
         save_data["updated_at"] = datetime.datetime.now().isoformat()
         

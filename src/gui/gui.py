@@ -160,33 +160,46 @@ def display_report(data: dict):
         return
     
     with st.container():
-        col_cust, col_opp = st.columns(2)
+        col_left, col_right = st.columns(2)
         
-        with col_cust:
-            st.markdown("#### 👤 客户画像")
+        # 左侧：销售代表信息
+        with col_left:
+            st.markdown("#### 👥 销售代表")
+            recorder = data.get("recorder", "未指定")
+            st.markdown(f"**{recorder}**")
+        
+        # 右侧：客户画像
+        with col_right:
+            st.markdown("#### 👤 客户信息")
             cust = data.get("customer_info", {})
             if cust:
-                st.markdown(f"- **姓名**: {cust.get('name', 'N/A')}")
+                st.markdown(f"- **名称**: {cust.get('name', 'N/A')}")
                 st.markdown(f"- **公司**: {cust.get('company', 'N/A')}")
                 st.markdown(f"- **职位**: {cust.get('role', 'N/A')}")
                 st.markdown(f"- **联系**: {cust.get('contact', 'N/A')}")
             else:
                 st.caption("未提取到有效信息")
         
-        with col_opp:
-            st.markdown("#### 💰 商机概览")
-            opp = data.get("project_opportunity", {})
-            if opp:
+        st.divider()
+        
+        # 商机概览
+        st.markdown("#### 💰 商机概览")
+        opp = data.get("project_opportunity", {})
+        if opp:
+            col1, col2, col3 = st.columns(3)
+            with col1:
                 proj_name = opp.get("project_name", "未命名项目")
                 is_new = "✨ 新项目" if opp.get("is_new_project") else "🔄 既有项目"
-                st.markdown(f"**{proj_name}** ({is_new})")
+                st.markdown(f"**{proj_name}**\n{is_new}")
+            with col2:
                 stage_key = str(opp.get("opportunity_stage", ""))
                 stage_name = st.session_state.engine.controller.stage_map.get(stage_key, "未知阶段")
-                st.markdown(f"- **阶段**: :blue[{stage_name}]")
-                st.markdown(f"- **预算**: :green[{opp.get('budget', '未知')}]")
-                st.markdown(f"- **时间**: {opp.get('timeline', '未知')}")
-            else:
-                st.caption("暂未发现明确商机")
+                st.markdown(f"**阶段**\n:blue[{stage_name}]")
+            with col3:
+                st.markdown(f"**预算**\n:green[{opp.get('budget', '未知')}]")
+            st.markdown(f"**时间**: {opp.get('timeline', '未知')}")
+        else:
+            st.caption("暂未发现明确商机")
         
         st.divider()
         st.markdown("#### 📌 关键点")
@@ -241,7 +254,18 @@ def process_user_input(user_input: str):
     if not user_input.strip():
         return
     add_user_message(user_input)
+    
+    # 显示加载占位符
+    loading_placeholder = st.empty()
+    with loading_placeholder.container():
+        st.info("🤔 思考中...", icon="ℹ️")
+    
+    # 处理输入
     result = st.session_state.engine.handle_user_input(user_input)
+    
+    # 清除加载占位符
+    loading_placeholder.empty()
+    
     result_type = result.get("type")
     if result_type == "detail":
         if result.get("auto_matched"):
@@ -278,12 +302,17 @@ def process_user_input(user_input: str):
         elif result["status"] == "success":
             add_ai_message(result["message"])
     elif result_type == "record":
-        add_ai_message(f"📝 {result['message']}\n\n{result['polished_content']}")
-        if result.get("has_context"):
-            current_name = result.get("current_opp_name", "当前商机")
-            add_ai_message(f"您可以继续输入内容追加笔记，或说'保存'保存至{current_name}/'创建'进行提交新商机。")
+        # 检查是否有 polished_content（来自 handle_record）
+        if "polished_content" in result:
+            add_ai_message(f"📝 {result['message']}\n\n{result['polished_content']}")
+            if result.get("has_context"):
+                current_name = result.get("current_opp_name", "当前商机")
+                add_ai_message(f"您可以继续输入内容追加笔记，或说'保存'保存至{current_name}/'创建'进行提交新商机。")
+            else:
+                add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交新商机。")
         else:
-            add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交新商机。")
+            # 来自 handle_save 的失败情况，只显示消息
+            add_ai_message(result.get("message", "未知错误"))
     elif result_type == "error":
         add_ai_message(result.get("message", "未知错误"))
     else:
