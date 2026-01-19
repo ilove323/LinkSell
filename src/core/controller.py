@@ -6,8 +6,8 @@ import os
 import glob
 from pathlib import Path
 from src.services.llm_service import (
-    analyze_text, refine_sales_data, polish_text, 
-    update_sales_data, classify_intent, query_sales_data, summarize_text
+    polish_text, classify_intent, query_sales_data, summarize_text,
+    architect_analyze
 )
 from src.services.asr_service import transcribe_audio
 from src.services.vector_service import VectorService
@@ -25,6 +25,7 @@ class LinkSellController:
             os.environ["HF_ENDPOINT"] = hf_endpoint
         
         self.default_recorder = self.config.get("global", "default_recorder", fallback="陈一骏")
+        self.note_buffer = [] # 笔记暂存区 (V3.0)
             
         self.api_key = self.config.get("doubao", "api_key", fallback=None)
         self.endpoint_id = self.config.get("doubao", "analyze_endpoint", fallback=None)
@@ -68,15 +69,10 @@ class LinkSellController:
             raise ValueError("LLM Configuration Invalid")
         return polish_text(text, self.api_key, self.endpoint_id)
 
-    def analyze(self, text):
-        if not self.validate_llm_config():
-            raise ValueError("LLM Configuration Invalid")
-        return analyze_text(text, self.api_key, self.endpoint_id)
-
     def identify_intent(self, text):
         """识别意图和内容，返回 {"intent": "...", "content": "..."}"""
         if not self.validate_llm_config():
-            return {"intent": "CREATE", "content": text}
+            return {"intent": "RECORD", "content": text}
         
         # 调用 LLM 进行分类，期望返回 JSON 格式
         result = classify_intent(text, self.api_key, self.endpoint_id)
@@ -89,13 +85,15 @@ class LinkSellController:
                 # 如果 LLM 返回字符串，尝试解析
                 parsed = json.loads(result) if isinstance(result, str) else {"intent": result}
             
-            intent = parsed.get("intent", "CREATE").upper()
+            intent = parsed.get("intent", "RECORD").upper()
             content = parsed.get("content", text)
         except:
-            # JSON 解析失败，降级为关键词判断
-            intent = "CREATE"
+            # JSON 解析失败，降级为关键词判断 (V3.0 置换版)
+            intent = "RECORD" # 默认归为笔记暂存
             content = text
-            if any(k in text for k in ["查", "找", "看", "哪些", "搜索"]): 
+            if any(k in text for k in ["正式保存", "正式录入", "提交到", "创建项目", "新建项目", "存入商机"]): 
+                intent = "CREATE"
+            elif any(k in text for k in ["查", "找", "看", "哪些", "搜索", "列表"]): 
                 intent = "LIST"
             elif any(k in text for k in ["删", "移除"]): 
                 intent = "DELETE"
@@ -103,15 +101,15 @@ class LinkSellController:
                 intent = "UPDATE"
         
         # 严格规范化意图
-        valid_intents = ["CREATE", "LIST", "GET", "UPDATE", "DELETE", "OTHER"]
+        valid_intents = ["CREATE", "LIST", "GET", "UPDATE", "DELETE", "RECORD", "OTHER"]
         if intent not in valid_intents:
-            intent = "CREATE"
+            intent = "RECORD"
         
-        # OTHER 的人工复核：防止对业务指令的误杀
+        # OTHER 的人工复核：防止对业务指令的误杀 (V3.0 置换版)
         if intent == "OTHER":
-            biz_keywords = ["项目", "商机", "单子", "客户", "聊", "聊过", "谈", "预算", "进度", "跟进", "详情", "档案"]
+            biz_keywords = ["项目", "商机", "单子", "客户", "聊", "谈", "预算", "进度", "跟进", "详情", "档案", "会议", "一期", "二期"]
             if len(text) > 8 or any(k in text for k in biz_keywords):
-                intent = "LIST"
+                intent = "RECORD"
         
         return {"intent": intent, "content": content}
         return intent
@@ -321,129 +319,124 @@ class LinkSellController:
                 missing[field_key] = (field_name, parent_key)
         return missing
 
-    def refine(self, data, supplements):
-        return refine_sales_data(data, supplements, self.api_key, self.endpoint_id)
-
     def update(self, data, instruction):
         """
-        UPDATE 流程：修改商机数据
-        
-        关键逻辑：
-        1. 调用 LLM 修改 JSON
-        2. 同步 project_name 字段
-        3. 保留元数据
-        4. **[原子操作]** 如果修改了商机名称，自动处理文件重命名 + 向量库更新
+        UPDATE 流程：修改商机数据 (V3.0 使用 Architect 引擎)
         """
-        updated_data = update_sales_data(data, instruction, self.api_key, self.endpoint_id)
+        # 将单条指令视为一条笔记，利用 Architect 的合并能力
+        updated_data = architect_analyze(
+            [instruction], 
+            self.api_key, 
+            self.endpoint_id, 
+            original_data=data, 
+            recorder=self.default_recorder
+        )
         
-        # --- 强一致性同步逻辑 ---
-        # 确保 project_name 在各处保持一致
+        if not updated_data:
+            return data
+            
+        # --- 强一致性同步逻辑 (保留) ---
         new_opp = updated_data.get("project_opportunity", {})
         inner_name = new_opp.get("project_name")
         outer_name = updated_data.get("project_name")
         
-        # 如果内部改了，同步到外部
         if inner_name and inner_name != outer_name:
             updated_data["project_name"] = inner_name
-        # 如果外部改了（且内部没改或为空），同步到内部
         elif outer_name and outer_name != inner_name:
             if "project_opportunity" not in updated_data: updated_data["project_opportunity"] = {}
             updated_data["project_opportunity"]["project_name"] = outer_name
             
-        # --- [关键修复]：保留系统级元数据 ---
-        # LLM 返回的数据里没有这些私有字段，必须从原数据拷过来！
+        # --- 保留系统级元数据 (保留) ---
         meta_keys = ["id", "_file_path", "_temp_id", "created_at", "record_logs", "updated_at"]
         for k in meta_keys:
             if k in data and k not in updated_data:
                 updated_data[k] = data[k]
         
-        # --- [原子操作]：如果修改了商机名称，处理文件重命名 + 向量库更新 ---
+        # --- [原子操作]：如果修改了商机名称，处理文件重命名 (保留) ---
         old_proj_name = data.get("project_opportunity", {}).get("project_name")
         new_proj_name = updated_data.get("project_opportunity", {}).get("project_name")
         
-        # 检测：商机名称是否真的改变了
         if old_proj_name and new_proj_name and old_proj_name != new_proj_name:
             old_file_path = Path(data.get("_file_path", ""))
             new_file_path = self._get_safe_filename(new_proj_name)
             
-            # 只有当新文件名与旧文件名不同时，才执行重命名
             if old_file_path.resolve() != new_file_path.resolve():
                 try:
-                    # 1. 准备保存数据（清理临时字段）
                     save_data = updated_data.copy()
                     save_data.pop("_temp_id", None)
                     save_data.pop("_file_path", None)
                     save_data["updated_at"] = datetime.datetime.now().isoformat()
                     
-                    # 2. 写入新文件
                     new_file_path.parent.mkdir(parents=True, exist_ok=True)
                     with open(new_file_path, "w", encoding="utf-8") as f:
                         json.dump(save_data, f, ensure_ascii=False, indent=2)
                     
-                    # 3. 删除旧文件（如果存在且不同）
                     if old_file_path.exists():
                         os.remove(old_file_path)
                     
-                    # 4. 向量库同步 (ID 保持不变，内容覆盖)
                     if self.vector_service:
                         real_id = updated_data.get("id")
                         if real_id:
-                            self.vector_service.delete_record(real_id)  # 删除旧记录
-                            self.vector_service.add_record(real_id, save_data)  # 添加新记录
+                            self.vector_service.delete_record(real_id)
+                            self.vector_service.add_record(real_id, save_data)
                     
-                    # 5. 更新元数据中的文件路径
                     updated_data["_file_path"] = str(new_file_path)
                     
                 except Exception as e:
                     print(f"⚠️ 商机名称重命名失败: {e}")
-                    # 如果重命名失败，返回更新后的数据但标记错误
-                    # 用户可以手动处理或重新尝试
             
         return updated_data
 
     def save(self, record, raw_content=""):
         """
         保存商机信息：每个商机一个独立 JSON 文件。
-        raw_content: polish_text.txt 润色后的原始文字。
+        V3.0：优先使用 current_log_entry 字段作为日志内容。
         """
-        # 1. 准备内容：二选一原则
-        polished_text = raw_content if raw_content else record.get("summary", "")
-        
-        # 核心逻辑：如果润色文本 > 500字，则生成摘要作为最终内容；否则直接用润色文本
-        if len(polished_text) > 500:
-            final_content = summarize_text(polished_text, self.api_key, self.endpoint_id)
-        else:
-            final_content = polished_text
-        
         now = datetime.datetime.now()
-        proj_info = record.get("project_opportunity", {})
-        proj_name = proj_info.get("project_name", "未命名项目")
         
-        # 2. 确定文件路径
+        # 1. 确定日志内容
+        # 优先从 Architect 生成的 current_log_entry 中获取
+        final_log_content = record.pop("current_log_entry", None)
+        
+        if not final_log_content:
+            # Fallback 1: 传入的原始文本
+            polished_text = raw_content if raw_content else record.get("summary", "")
+            # 核心逻辑：如果文本太长，则生成摘要；否则直接用
+            if polished_text and len(polished_text) > 500:
+                final_log_content = summarize_text(polished_text, self.api_key, self.endpoint_id)
+            else:
+                final_log_content = polished_text or "无详细小记"
+
+        # 2. 准备小记条目
+        new_log_entry = {
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "recorder": self.default_recorder,
+            "content": final_log_content
+        }
+
+        proj_info = record.get("project_opportunity", {})
+        proj_name = proj_info.get("project_name", record.get("project_name", "未命名项目"))
+        
+        # 3. 确定文件路径
         file_path = self._get_safe_filename(proj_name)
         
-        # 3. 读取现有文件或创建新结构
+        # 4. 读取现有文件或初始化新结构
         if file_path.exists():
             with open(file_path, "r", encoding="utf-8") as f:
                 try: target_proj = json.load(f)
                 except: target_proj = {}
-            is_new = False
         else:
             target_proj = {
-                "id": str(int(datetime.datetime.now().timestamp())), # 临时生成唯一ID
+                "id": record.get("id") or str(int(now.timestamp())),
                 "created_at": now.isoformat(),
                 "record_logs": []
             }
-            is_new = True
 
-        # 4. 构造本次记录的小记 (必须包含时间、记录者)
-        new_log_entry = {
-            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "recorder": self.default_recorder,
-            "content": final_content  # 最终入库内容（摘要或原话）
-        }
-
-        # 5. 更新数据
+        # 5. 更新核心数据
+        # 排除掉不需要在持久化 JSON 中重复出现的元数据
+        record.pop("_temp_id", None)
+        record.pop("_file_path", None)
+        
         target_proj.update(record) 
         if "project_opportunity" not in target_proj: target_proj["project_opportunity"] = {}
         target_proj["project_opportunity"].update(proj_info)
@@ -451,18 +444,19 @@ class LinkSellController:
         if "customer_info" not in target_proj: target_proj["customer_info"] = {}
         target_proj["customer_info"].update(record.get("customer_info", {}))
         
+        # 6. 追加日志
         if "record_logs" not in target_proj: target_proj["record_logs"] = []
         target_proj["record_logs"].append(new_log_entry)
         
         target_proj["updated_at"] = now.isoformat()
         
-        # 6. 写回文件
+        # 7. 写回文件
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(target_proj, f, ensure_ascii=False, indent=2)
             
         record_id = target_proj.get("id")
 
-        # 7. 向量库同步 (使用 upsert 确保是最新的)
+        # 8. 向量库同步
         if self.vector_service:
             try:
                 self.vector_service.add_record(record_id, target_proj)
@@ -731,81 +725,115 @@ class LinkSellController:
         # 3. 多结果歧义
         return None, candidates, "ambiguous"
 
-    def merge_draft_into_old(self, old_data, draft):
+    def process_list_request(self, content):
         """
-        智能合并：将 Draft (新录入) 中的有效信息合并到 Old (旧档案) 中。
-        仅覆盖 Draft 中非空的字段，防止把旧档案里的数据冲掉。
+        [核心业务逻辑] 处理商机列表查询
         """
-        import copy
-        merged = copy.deepcopy(old_data)
+        search_term = self.extract_search_term(content) or ""
+        clean_term = search_term.upper().replace("`", "").replace("'", "").replace('"', "")
         
-        # 1. 顶层字段合并
-        for k, v in draft.items():
-            if k in ["project_opportunity", "customer_info"]: continue # 单独处理
-            if v: # 只有非空值才覆盖 (None, "", [], {} 都不覆盖)
-                merged[k] = v
-                
-        # 2. 嵌套字段合并 (Project Opportunity)
-        if "project_opportunity" not in merged: merged["project_opportunity"] = {}
-        draft_opp = draft.get("project_opportunity", {})
-        for k, v in draft_opp.items():
-            if v: merged["project_opportunity"][k] = v
-            
-        # 3. 嵌套字段合并 (Customer Info)
-        if "customer_info" not in merged: merged["customer_info"] = {}
-        draft_cust = draft.get("customer_info", {})
-        for k, v in draft_cust.items():
-            if v: merged["customer_info"][k] = v
-            
-        # 4. 强制更新 Summary (这是本次的小记核心)
-        merged["summary"] = draft.get("summary", "")
+        is_full_list = not clean_term or clean_term in ["ALL", "未知", "UNKNOWN", "商机", "项目", "列表", "全部", "所有"]
         
-        return merged
+        if is_full_list:
+            results = self.list_opportunities()
+        else:
+            def simple_filter(data): 
+                return search_term.lower() in json.dumps(data, ensure_ascii=False).lower()
+            results = self.list_opportunities(simple_filter)
+            
+        return {
+            "results": results,
+            "message": f"📋 找到 {len(results)} 条商机" if results else "暂未找到相关商机。",
+            "search_term": search_term if not is_full_list else "全部"
+        }
 
-    def process_create_request(self, content):
+    def get_missing_fields_notification(self, data):
         """
-        [核心业务逻辑] 处理新建商机请求
-        封装了：润色 -> 分析 -> 查重(自动关联) -> 缺失检查 的完整链路
+        [统一话术逻辑] 生成缺失字段的通知文本
         """
-        # 1. 润色
+        missing = self.get_missing_fields(data)
+        if not missing:
+            return "✅ 信息完整。确认无误请执行保存。"
+            
+        names = [v[0] for v in missing.values()]
+        return f"⚠️ 当前草稿缺失关键信息：**{', '.join(names)}**。\n您可以直接在对话框输入补充（如“预算50万”），或直接执行保存。"
+
+    # --- V3.0 笔记暂存与提交逻辑 ---
+
+    def add_to_note_buffer(self, content):
+        """将一段录入内容添加到笔记暂存区"""
         polished = self.polish(content)
-        
-        # 2. 分析
-        draft = self.analyze(polished)
-        if not draft:
-            return {"status": "error", "message": "AI 分析失败，无法提取有效信息。"}
-            
-        # 3. 查重逻辑
-        proj_name = draft.get("project_opportunity", {}).get("project_name")
-        candidates = []
-        linked_target = None
+        self.note_buffer.append(polished)
+        return polished
+
+    def clear_note_buffer(self):
+        """清空笔记暂存区"""
+        self.note_buffer = []
+
+    def process_commit_request(self, project_name_hint=None):
+        """
+        [核心业务逻辑] 将暂存区的笔记正式提交到商机。
+        1. 尝试锁定目标商机 (根据 hint 或笔记内容)
+        2. 调用 Architect Analyze 进行结构化提取/合并
+        3. 返回结果包
+        """
+        if not self.note_buffer:
+            return {"status": "error", "message": "笔记暂存区为空，请先录入一些内容。"}
+
+        # 1. 锁定目标
+        target_obj = None
+        if project_name_hint:
+            # 这里的 hint 可能是从意图识别里拿出来的 "RECORD" content
+            res_target, candidates, status = self.resolve_target_interactive(project_name_hint)
+            if status in ["found_exact", "found_by_context"]:
+                target_obj = res_target
+
+        # 2. 如果没锁定，先做一次初步分析看看笔记里提到了哪个项目
+        if not target_obj:
+            # 临时生成一个草稿来探探路 (取前 3 条笔记)
+            preview = architect_analyze(self.note_buffer[:3], self.api_key, self.endpoint_id, recorder=self.default_recorder)
+            if preview:
+                extracted_name = preview.get("project_opportunity", {}).get("project_name")
+                if extracted_name:
+                    res_target, candidates, status = self.resolve_target_interactive(extracted_name)
+                    if status in ["found_exact", "found_by_context"]:
+                        target_obj = res_target
+
+        # 3. 调用销售架构师进行最终处理
+        # 传入 target_obj (如果有) 进行合并，否则为新建
+        result_json = architect_analyze(
+            self.note_buffer, 
+            self.api_key, 
+            self.endpoint_id, 
+            original_data=target_obj, 
+            recorder=self.default_recorder
+        )
+
+        if not result_json:
+            return {"status": "error", "message": "AI 提交处理失败。"}
+
+        # 4. 查重判定 (如果是新建模式，可能还需要检查是否有同名项目)
         status = "new"
-        
-        if proj_name:
-            candidates = self.find_potential_matches(proj_name)
-            # 检查精确匹配
-            for cand in candidates:
-                if cand["name"].strip().lower() == proj_name.strip().lower():
-                    # 精确匹配 -> 自动关联
-                    linked_target = cand
-                    status = "linked"
-                    # 强行同步 ID 和 名字，确保一致性
-                    draft["id"] = cand["id"]
-                    if "project_opportunity" not in draft: draft["project_opportunity"] = {}
-                    draft["project_opportunity"]["project_name"] = cand["name"]
-                    break
-            
-            if status != "linked" and candidates:
-                status = "ambiguous" # 存在模糊匹配
-        
-        # 4. 缺失检查
-        missing = self.get_missing_fields(draft)
-        
+        linked_target = None
+        if target_obj:
+            status = "linked"
+            linked_target = {"id": target_obj["id"], "name": target_obj.get("project_name", "未知")}
+        else:
+            # 即使 architect 没拿到 original_json，它可能输出了一个已存在的项目名
+            # 这里再做最后一层保险
+            p_name = result_json.get("project_opportunity", {}).get("project_name")
+            if p_name:
+                matches = self.find_potential_matches(p_name)
+                for m in matches:
+                    if m["name"].strip().lower() == p_name.strip().lower():
+                        linked_target = m
+                        status = "linked"
+                        result_json["id"] = m["id"]
+                        break
+
         return {
             "status": status,
-            "draft": draft,
-            "polished_text": polished,
+            "draft": result_json,
             "linked_target": linked_target,
-            "candidates": candidates,
-            "missing_fields": missing
+            "missing_fields": self.get_missing_fields(result_json)
         }

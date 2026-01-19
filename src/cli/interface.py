@@ -119,9 +119,9 @@ def display_result_human_readable(data: dict):
     grid = Table.grid(expand=True, padding=1)
     grid.add_column(); grid.add_column()
     kp_text = Text(); kp_text.append("📌 关键点：\n", style="bold magenta")
-    for idx, p in enumerate(data.get("key_points", []), 1): kp_text.append(f"{idx}. {p}\n")
+    for idx, p in enumerate(opp.get("key_points", []), 1): kp_text.append(f"{idx}. {p}\n")
     act_text = Text(); act_text.append("✅ 待办事项：\n", style="bold red")
-    for idx, a in enumerate(data.get("action_items", []), 1): act_text.append(f"{idx}. {a}\n")
+    for idx, a in enumerate(opp.get("action_items", []), 1): act_text.append(f"{idx}. {a}\n")
     grid.add_row(Panel(kp_text, expand=True), Panel(act_text, expand=True))
     console.print(grid)
 
@@ -231,15 +231,23 @@ def _interactive_review_loop(data: dict, save_handler, is_new=False):
             console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
             current_data = controller.update(current_data, user_input)
 
-def handle_create_logic(content):
-    """处理 CREATE 意图 (无状态/暂存模式)"""
+def handle_record_logic(content):
+    """处理 RECORD 意图 (V3.0 笔记暂存模式)"""
+    # 仅仅是添加笔记到暂存区
+    polished = controller.add_to_note_buffer(content)
+    
+    count = len(controller.note_buffer)
+    console.print(Panel(f"📝 [bold green]笔记已暂存 ({count}条)[/bold green]\n\n[dim]{polished}[/dim]", style="green"))
+    console.print("[dim]您可以继续输入内容追加笔记，或者说“正式录入/创建项目”进行正式提交。[/dim]")
+
+def handle_create_logic(project_name_hint):
+    """处理 CREATE 意图 (V3.0 正式录入/提交模式)"""
     global staged_data, current_opp_id, pending_action
     
-    console.print(Panel(f"[bold cyan]{get_random_ui('polishing_start')}[/bold cyan]", style="cyan"))
-    console.print(Panel(f"[bold yellow]{get_random_ui('analysis_start')}[/bold yellow]", title="处理中"))
-
-    # 调用核心业务逻辑
-    result_pkg = controller.process_create_request(content)
+    console.print(Panel(f"🚀 [bold yellow]正在分析暂存笔记并提交至商机...[/bold yellow]", style="yellow"))
+    
+    # 调用核心业务逻辑进行提交
+    result_pkg = controller.process_commit_request(project_name_hint)
     
     if result_pkg["status"] == "error":
         console.print(f"[red]{result_pkg.get('message', '处理失败')}[/red]")
@@ -250,7 +258,6 @@ def handle_create_logic(content):
     
     # 结果分支处理
     if status == "linked":
-        # 自动关联成功
         match = result_pkg["linked_target"]
         current_opp_id = match["id"]
         
@@ -261,33 +268,54 @@ def handle_create_logic(content):
         else:
             staged_data = draft
             
-        console.print(f"[dim]已自动关联现有项目: {match['name']} (ID: {match['id']})[/dim]")
-        
-    elif status == "ambiguous":
-        # 发现疑似项目 -> 进入挂起选择模式
-        pending_action = {
-            "type": "select_ambiguity", 
-            "intent": "CREATE", 
-            "candidates": result_pkg["candidates"],
-            "draft": draft
-        }
-        console.print("[yellow]🔍 发现疑似现有项目，请输入序号进行关联，或选择新建。[/yellow]")
-        return 
-        
-    else: # status == "new"
+        console.print(f"[bold green]✅ 已成功关联并更新现有项目: {match['name']}[/bold green]")
+    else:
         current_opp_id = None
         staged_data = draft
-        console.print("[dim]识别为新项目草稿。[/dim]")
+        console.print(f"[bold cyan]✨ 已识别并生成新商机草稿：{draft.get('project_opportunity',{}).get('project_name')}[/bold cyan]")
 
-    # 缺失字段告知
-    missing = result_pkg["missing_fields"]
-    if missing:
-        msg = "[yellow]⚠️  当前草稿缺失关键信息：[/yellow] " + ", ".join([v[0] for v in missing.values()])
-        console.print(msg)
+    # 缺失字段告知 (使用 Controller 统一生成的话术)
+    msg = controller.get_missing_fields_notification(staged_data)
+    console.print(Panel(msg, style="yellow"))
 
     # 展示结果
     display_result_human_readable(staged_data)
-    console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 或 '保存' 即可写入数据库。[/bold green]")
+    
+    # 设置挂起动作：保存/放弃选择
+    pending_action = {
+        "type": "save_discard",
+        "draft": staged_data
+    }
+    console.print("[bold cyan]📥 请确认提交内容：[1] 确认保存并同步  [2] 放弃修改[/bold cyan]")
+    
+    # 提交后自动清空 buffer
+    controller.clear_note_buffer()
+
+def handle_list_logic(content):
+    """处理 LIST 意图"""
+    # 调用核心业务逻辑
+    result_pkg = controller.process_list_request(content)
+    results = result_pkg["results"]
+    
+    console.print(f"[dim]🔍 搜索目标：{result_pkg['search_term']}...[/dim]")
+    
+    if results:
+        table = Table(title=result_pkg["message"], show_header=True, header_style="bold magenta")
+        table.add_column("ID", width=12)
+        table.add_column("项目名称")
+        table.add_column("阶段")
+        table.add_column("销售")
+        
+        for opp in results:
+            pid = str(opp.get("id", "未知"))
+            pname = _safe_str(opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知")))
+            stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
+            stage_name = _safe_str(controller.stage_map.get(stage_code, stage_code))
+            sales = _safe_str(opp.get("sales_rep", "-"))
+            table.add_row(pid, pname, stage_name, sales)
+        console.print(table)
+    else:
+        console.print(f"[yellow]{result_pkg['message']}[/yellow]")
 
 def handle_get_logic(content):
     """处理 GET 意图"""
@@ -352,9 +380,19 @@ def handle_update_logic(content):
     staged_data = updated_result
     current_opp_id = updated_result.get("id")
     
+    # 缺失字段告知
+    msg = controller.get_missing_fields_notification(staged_data)
+    console.print(Panel(msg, style="yellow"))
+
     # 5. 展示结果
     display_result_human_readable(staged_data)
-    console.print("[bold green]✅ 修改已暂存。输入 'SAVE' 或 '保存' 即可写入数据库。[/bold green]")
+    
+    # 设置挂起动作：保存/放弃选择 (模拟按钮)
+    pending_action = {
+        "type": "save_discard",
+        "draft": staged_data
+    }
+    console.print("[bold cyan]📥 请选择：[1] 确认保存  [2] 放弃修改[/bold cyan]")
 
 def handle_delete_logic(content):
     """处理 DELETE 意图"""
@@ -372,16 +410,19 @@ def handle_delete_logic(content):
             console.print(f"- [bold cyan]{cid}[/bold cyan] : {cand['name']} ([dim]{cand.get('source', '')}[/dim])")
         return
 
-    # status == "found_exact" or "found_by_context" (context unlikely for delete unless explicit)
+    # status == "found_exact" or "found_by_context"
     if target:
-        pname = target.get("project_opportunity", {}).get("project_name")
-        console.print(Panel(f"[red]即将删除：{pname}[/red]", style="red"))
+        global pending_action
+        warning = controller.generate_delete_warning(target)
+        console.print(Panel(warning, style="red", title="⚠️ 删除确认"))
         display_result_human_readable(target) # 最后看一眼
-        if typer.confirm("⚠️  此操作不可逆！确认彻底删除吗？"):
-            if controller.delete_opportunity(target.get("id")):
-                console.print("[green]删除成功。[/green]")
-            else:
-                console.print("[red]删除失败。[/red]")
+        
+        pending_action = {
+            "type": "confirm_delete",
+            "target": target
+        }
+        console.print("[bold red]🚨 请确认：[1] 彻底删除  [2] 取消[/bold red]")
+
 
 # --- Main Entry Point ---
 
@@ -504,14 +545,15 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
                             current_opp_id = old_data["id"]
                             console.print("[dim]已关联旧档案。[/dim]")
                             
-                            # 重新检查缺失
-                            missing = controller.get_missing_fields(staged_data)
-                            if missing:
-                                msg = "[yellow]⚠️  合并后仍缺失：[/yellow] " + ", ".join([v[0] for v in missing.values()])
-                                console.print(msg)
+                            # 重新检查缺失 (使用统一话术)
+                            msg = controller.get_missing_fields_notification(staged_data)
+                            console.print(Panel(msg, style="yellow"))
                             
                             display_result_human_readable(staged_data)
-                            console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 即可写入数据库。[/bold green]")
+                            
+                            # 转换到保存挂起状态
+                            pending_action = {"type": "save_discard", "draft": staged_data}
+                            console.print("[bold cyan]📥 请选择：[1] 确认保存  [2] 放弃修改[/bold cyan]")
                             
                     else: # GET / UPDATE / DELETE
                         target = controller.get_opportunity_by_id(selected_cand["id"])
@@ -520,31 +562,58 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
                             if intent == "GET":
                                 console.clear(); display_result_human_readable(target)
                             elif intent == "UPDATE":
-                                # 恢复之前的 prompt 内容比较困难，因为是无状态的
-                                # 但 pending_action 可以存 prompt
-                                # 简化处理：选中后，提示用户重新输入修改指令，或者直接进入锁定状态
                                 console.print(f"[green]已锁定: {target.get('project_opportunity',{}).get('project_name')}[/green]")
                                 console.print("请重新输入修改指令 (例如: 把预算改为50万)")
                             elif intent == "DELETE":
                                 handle_delete_logic(str(target.get("id"))) # Re-trigger delete with ID
-                    
-                    pending_action = None # 清除状态
+                        
+                        if intent != "CREATE":
+                             pending_action = None # 清除状态
                     
                 elif is_create_new:
                     console.print("[green]确认新建项目。[/green]")
                     staged_data = pending_action["draft"]
                     current_opp_id = None
-                    missing = controller.get_missing_fields(staged_data)
-                    if missing:
-                        msg = "[yellow]⚠️  当前草稿缺失：[/yellow] " + ", ".join([v[0] for v in missing.values()])
-                        console.print(msg)
+                    msg = controller.get_missing_fields_notification(staged_data)
+                    console.print(Panel(msg, style="yellow"))
                     display_result_human_readable(staged_data)
-                    console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 即可写入数据库。[/bold green]")
-                    pending_action = None
+                    pending_action = {"type": "save_discard", "draft": staged_data}
+                    console.print("[bold cyan]📥 请选择：[1] 确认保存  [2] 放弃修改[/bold cyan]")
                 else:
                     console.print("[red]无效选择，请重试。[/red]")
                 
-                # Loop again to keep blocking until valid selection
+                continue
+            
+            elif pending_action["type"] == "save_discard":
+                choice = typer.prompt("您的选择 (1:保存, 2:放弃)", show_default=False).strip()
+                if choice == "1":
+                    rid, _ = controller.save(staged_data, raw_content="")
+                    console.print(f"[bold green]{get_random_ui('db_save_success', record_id=rid)}[/bold green]")
+                    current_opp_id = rid
+                    staged_data = None
+                    pending_action = None
+                elif choice == "2":
+                    console.print("[dim]修改已放弃。[/dim]")
+                    staged_data = None
+                    pending_action = None
+                else:
+                    console.print("[red]无效选择，请输入 1 或 2。[/red]")
+                continue
+
+            elif pending_action["type"] == "confirm_delete":
+                target = pending_action["target"]
+                choice = typer.prompt("您的选择 (1:确认删除, 2:取消)", show_default=False).strip()
+                if choice == "1":
+                    if controller.delete_opportunity(target.get("id")):
+                        console.print("[green]✅ 删除成功。[/green]")
+                    else:
+                        console.print("[red]❌ 删除失败。[/red]")
+                    pending_action = None
+                elif choice == "2":
+                    console.print("[dim]操作已取消。[/dim]")
+                    pending_action = None
+                else:
+                    console.print("[red]无效选择，请输入 1 或 2。[/red]")
                 continue
 
         # 检查退出命令
@@ -571,13 +640,15 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
         # 1. 意图识别 (The Brain) - 返回 {"intent": "...", "content": "..."}
         with console.status("[bold yellow]正在分析您的意图...", spinner="dots"):
             result = controller.identify_intent(content)
-            intent = result.get("intent", "CREATE")
+            intent = result.get("intent", "RECORD")
             extracted_content = result.get("content", content)
         
         console.print(f"[dim]识别意图: {intent}[/dim]")
 
         # 2. 意图分发 (The Dispatcher) - 使用提取的内容
-        if intent == "CREATE":
+        if intent == "RECORD":
+            handle_record_logic(extracted_content)
+        elif intent == "CREATE":
             handle_create_logic(extracted_content)
         elif intent == "LIST":
             handle_list_logic(extracted_content)

@@ -156,6 +156,24 @@ def render_report(data):
                 st.markdown(f"- **时间**: {opp.get('timeline', '未知')}")
             else: st.caption("暂未发现明确商机")
         
+        st.divider()
+        st.markdown("#### 📌 关键点")
+        opp = data.get("project_opportunity", {})
+        key_points = opp.get("key_points", []) if opp else []
+        if key_points:
+            for idx, point in enumerate(key_points, 1):
+                st.markdown(f"{idx}. {point}")
+        else:
+            st.caption("暂无关键点")
+        
+        st.markdown("#### ✅ 待办事项")
+        action_items = opp.get("action_items", []) if opp else []
+        if action_items:
+            for idx, item in enumerate(action_items, 1):
+                st.markdown(f"{idx}. {item}")
+        else:
+            st.caption("暂无待办事项")
+        
         # 缺失字段警告
         missing = st.session_state.controller.get_missing_fields(data)
         if missing:
@@ -208,17 +226,13 @@ def reset_state():
 
 def handle_missing(missing_map):
     # 辅助函数：处理缺失字段通知 (无状态)
-    # 确保使用的是暂存区数据
     target_data = st.session_state.staged_data if st.session_state.staged_data else st.session_state.sales_data
     if target_data:
         add_report_message(target_data)
     
-    if missing_map:
-        names = [v[0] for v in missing_map.values()]
-        msg = f"⚠️ 当前草稿缺失关键信息：**{', '.join(names)}**。\n\n您可以在对话框直接输入补充（如“预算50万”），或直接点击下方 **确认保存**。"
-        add_ai_message(msg)
-    else:
-        add_ai_message("✅ 信息完整。确认无误请点击下方 **确认保存**。")
+    # 使用 Controller 统一生成的话术
+    msg = st.session_state.controller.get_missing_fields_notification(target_data)
+    add_ai_message(msg)
 
 def handle_logic(prompt):
     if not prompt: return
@@ -230,39 +244,43 @@ def handle_logic(prompt):
     # 始终重入意图识别 (无状态)
     with st.spinner("正在分析意图..."):
         result = st.session_state.controller.identify_intent(prompt)
-        intent = result.get("intent", "CREATE")
+        intent = result.get("intent", "RECORD")
         extracted_content = result.get("content", prompt)
     
-    if intent == "CREATE":
-        with st.spinner("处理中..."):
-            pkg = st.session_state.controller.process_create_request(extracted_content)
+    if intent == "RECORD":
+        with st.spinner("正在暂存笔记..."):
+            polished = st.session_state.controller.add_to_note_buffer(extracted_content)
+        
+        count = len(st.session_state.controller.note_buffer)
+        add_ai_message(f"📝 **笔记已暂存 ({count}条)**\n\n> {polished}\n\n您可以继续提供信息，或者说“创建项目”进行正式提交。")
+
+    elif intent == "CREATE":
+        with st.spinner("正在提交笔记..."):
+            pkg = st.session_state.controller.process_commit_request(extracted_content)
+        
         if pkg["status"] == "error":
             add_ai_message(f"❌ {pkg.get('message')}")
             return
         
         st.session_state.staged_data = pkg["draft"]
-        if pkg["status"] == "linked":
+        status = pkg["status"]
+        
+        if status == "linked":
             match = pkg["linked_target"]
             st.session_state.current_opp_id = match["id"]
+            add_ai_message(f"✅ 已成功关联并更新现有项目：**{match['name']}**")
+            handle_missing(pkg["missing_fields"])
             
-            # 获取旧档案并合并
-            old_data = st.session_state.controller.get_opportunity_by_id(match["id"])
-            if old_data:
-                st.session_state.staged_data = st.session_state.controller.merge_draft_into_old(old_data, pkg["draft"])
-            
-            add_ai_message(f"✅ 自动关联：**{match['name']}**")
-            # 重新检查缺失 (基于合并后的数据)
-            missing = st.session_state.controller.get_missing_fields(st.session_state.staged_data)
-            handle_missing(missing)
-            
-        elif pkg["status"] == "ambiguous":
+        elif status == "ambiguous":
             st.session_state.pending_action = {"type": "create_ambiguity", "candidates": pkg["candidates"]}
             add_ai_message("🔍 发现疑似现有项目，请选择关联或新建：")
-            # 此时不展示详情，等待用户选择
             
         else:
-            add_ai_message("✨ 识别为新项目。")
+            add_ai_message("✨ 识别为新商机草稿。")
             handle_missing(pkg["missing_fields"])
+            
+        # 提交后清空 buffer
+        st.session_state.controller.clear_note_buffer()
 
     elif intent in ["GET", "UPDATE", "DELETE"]:
         target, candidates, status = st.session_state.controller.resolve_target_interactive(
@@ -287,9 +305,11 @@ def handle_logic(prompt):
                 add_report_message(upd)
                 add_ai_message("修改已暂存，确认请点击 **确认保存**。")
             elif intent == "DELETE":
-                st.session_state.pending_action = {"type": "confirm_delete", "target": target}
-                add_ai_message(f"🗑️ 确认删除 **{target.get('project_opportunity',{}).get('project_name')}** 吗？")
+                st.session_state.sales_data = target
+                warning = st.session_state.controller.generate_delete_warning(target)
+                add_ai_message(warning)
                 add_report_message(target)
+                st.session_state.pending_action = {"type": "confirm_delete", "target": target}
 
     elif intent == "LIST":
         add_ai_message("📋 正在获取商机列表...")

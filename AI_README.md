@@ -16,32 +16,30 @@
     - **Set via GET**: 当 `handle_get_logic` 成功解析目标时，**静默更新**此变量。
     - **Used by UPDATE**: 当 `handle_update_logic` 检测到模糊指令（Vague Instruction）时，自动使用此 ID 作为目标。
 
-### 1.2 路由逻辑 (Intent-Based Routing)
+### 1.2 路由逻辑 (Intent-Based Routing v3.0)
 1.  **Intent Identification**: 调用 `controller.identify_intent` 获取 `intent` 和 `content`。
 2.  **Dispatching**:
-    - `CREATE`: 路由至 `handle_create_logic`。
-    - `GET`: 路由至 `handle_get_logic` -> 更新 `current_opp_id` -> **无交互退出**。
-    - `UPDATE`: 路由至 `handle_update_logic` -> 检查 `search_term` -> 若模糊则使用 `current_opp_id` -> 若无 ID 则进入搜索 -> 更新 `current_opp_id`。
-    - `LIST/DELETE`: 标准路由。
+    - **RECORD**: 路由至 `handle_record_logic` -> 调用 `controller.add_to_note_buffer`。
+    - **CREATE**: 路由至 `handle_create_logic` -> 调用 `controller.process_commit_request` (触发 Architect 引擎)。
+    - **GET**: 路由至 `handle_get_logic` -> 更新 `current_opp_id` -> 静默展示。
+    - **UPDATE**: 路由至 `handle_update_logic` -> 字段级精准修正。
+    - **LIST/DELETE**: 标准路由。
 
 ---
 
-## 2. 目标解析与交互 (Resolution & Interaction)
+## 2. 销售架构师流程 (The Architect Pipeline)
 
-`_resolve_target_strictly(extracted_content)` 及各 Handler 遵循 **"Real ID Only"** 原则。
+### 2.1 笔记暂存 (RECORDing)
+- 用户的原始输入被视为“笔记”。
+- `controller` 维护一个 `note_buffer` 列表。
+- 每条笔记都会先经过 `polish_text` 润色后再入库。
 
-### 2.1 废除序号 (No Index Selection)
-- 系统不再显示 `[1], [2], [3]` 的序号列表。
-- 系统显示 `- [ID] : Project Name`。
-- 用户必须输入 **真实 ID** 或特定指令（如 `N` 新建）。
+### 2.2 提交与合并 (CREATing)
+- 当意图为 `CREATE` 时，触发 Commit 逻辑。
+- **Entity Lookup**: 优先搜索笔记中提及的项目名，或使用 `project_name_hint`。
+- **Merging**: 使用 `sales_architect.txt` 提示词。如果有 `original_json`，执行字段覆盖与 Log 追加；否则执行新建。
+- **Stateless Confirmation**: 生成 `staged_data`，用户必须通过物理按钮或序号确认后才正式入库。
 
-### 2.2 CREATE 流程的特殊分流
-在 `handle_create_logic` 中：
-- **Detection**: 自动搜索疑似旧项目。
-- **Action**: 用户输入 `ID` 关联，或输入 `N` 新建。
-- **Conflict Check**:
-    - **Core Fields** (Budget, Stage, etc.): 弹出冲突提示，询问是否覆盖。
-    - **Follow-up Note** (Summary): **直接追加**至 `record_logs`，不触发冲突检查。
 
 ---
 

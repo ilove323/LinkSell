@@ -32,68 +32,6 @@ def load_prompt(prompt_name: str, fallback: str = None) -> str:
     raise FileNotFoundError(f"【架构禁忌】: 严禁在代码中硬编码 Prompt！请创建文件: {prompt_path}" + 
                            (f" 或 fallback {fallback_path}" if fallback else ""))
 
-def analyze_text(content: str, api_key: str, endpoint_id: str):
-    """
-    调用火山引擎 Ark Runtime (Doubao) 分析文本。
-    使用 create_sales.txt prompt 将文本转换为结构化 JSON。
-    """
-    client = Ark(api_key=api_key)
-    system_prompt = load_prompt("create_sales", fallback="analyze_sales")  # 支持 fallback 兼容
-
-    try:
-        completion = client.chat.completions.create(
-            model=endpoint_id,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content},
-            ],
-            temperature=0.3, 
-        )
-        
-        raw_content = completion.choices[0].message.content
-        if "```json" in raw_content:
-            raw_content = raw_content.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw_content:
-             raw_content = raw_content.split("```")[1].split("```")[0].strip()
-             
-        return json.loads(raw_content)
-    except Exception as e:
-        print(f"[bold red]LLM 分析失败：{e}[/bold red]")
-        return None
-
-def refine_sales_data(original_data: dict, user_supplements: dict, api_key: str, endpoint_id: str):
-    """
-    使用 LLM 校验并合并用户补录的信息。
-    """
-    if not user_supplements:
-        return original_data
-
-    client = Ark(api_key=api_key)
-    system_prompt = load_prompt("refine_sales")
-
-    payload = {
-        "original_json": original_data,
-        "user_supplements": user_supplements
-    }
-
-    try:
-        completion = client.chat.completions.create(
-            model=endpoint_id,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-            temperature=0.1,
-        )
-        raw_content = completion.choices[0].message.content
-        if "```json" in raw_content:
-            raw_content = raw_content.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw_content:
-             raw_content = raw_content.split("```")[1].split("```")[0].strip()
-        return json.loads(raw_content)
-    except:
-        return original_data
-
 def polish_text(content: str, api_key: str, endpoint_id: str) -> str:
     """
     使用 LLM 将口语化/杂乱文本转换为规范的书面文本。
@@ -213,16 +151,16 @@ def classify_intent(text: str, api_key: str, endpoint_id: str) -> dict:
             result = json.loads(response)
             # 确保意图是大写
             if isinstance(result, dict):
-                intent = result.get("intent", "CREATE").upper()
+                intent = result.get("intent", "RECORD").upper()
                 content = result.get("content", text)
                 return {"intent": intent, "content": content}
         except:
             pass
         
-        # 如果 JSON 解析失败，尝试从纯文本提取
+        # 如果 JSON 解析失败，尝试从纯文本提取 (V3.0 置换版)
         response_upper = response.upper()
-        intent = "CREATE"  # 默认值
-        for keyword in ["CREATE", "LIST", "GET", "UPDATE", "DELETE", "OTHER"]:
+        intent = "RECORD"  # 默认值改为记录暂存
+        for keyword in ["CREATE", "RECORD", "LIST", "GET", "UPDATE", "DELETE", "OTHER"]:
             if keyword in response_upper:
                 intent = keyword
                 break
@@ -230,8 +168,8 @@ def classify_intent(text: str, api_key: str, endpoint_id: str) -> dict:
         return {"intent": intent, "content": text}
         
     except Exception as e:
-        # 默认走创建/录入逻辑比较保险
-        return {"intent": "CREATE", "content": text}
+        # 默认走记录暂存逻辑比较保险
+        return {"intent": "RECORD", "content": text}
 
 def query_sales_data(query: str, history_data: list, api_key: str, endpoint_id: str) -> str:
     """
@@ -257,3 +195,43 @@ def query_sales_data(query: str, history_data: list, api_key: str, endpoint_id: 
         return completion.choices[0].message.content.strip()
     except Exception as e:
         return f"查询出错啦：{e}"
+
+def architect_analyze(raw_notes: list, api_key: str, endpoint_id: str, original_data: dict = None, recorder: str = "未知", current_time: str = None) -> dict:
+    """
+    [V3.0 核心] 使用销售架构师 Prompt 处理笔记。
+    支持新建或基于已有数据的追加更新。
+    """
+    client = Ark(api_key=api_key)
+    system_prompt = load_prompt("sales_architect")
+    
+    if not current_time:
+        import datetime
+        current_time = datetime.datetime.now().isoformat()
+
+    payload = {
+        "original_json": original_data,
+        "raw_notes": raw_notes,
+        "current_time": current_time,
+        "recorder": recorder
+    }
+
+    try:
+        completion = client.chat.completions.create(
+            model=endpoint_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            temperature=0.1, 
+        )
+        
+        raw_content = completion.choices[0].message.content
+        if "```json" in raw_content:
+            raw_content = raw_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw_content:
+             raw_content = raw_content.split("```")[1].split("```")[0].strip()
+             
+        return json.loads(raw_content)
+    except Exception as e:
+        print(f"LLM Architect Error: {e}")
+        return None
