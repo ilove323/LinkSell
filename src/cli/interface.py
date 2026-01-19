@@ -15,6 +15,7 @@ controller = LinkSellController()
 cli_app = typer.Typer()
 current_opp_id = None # 全局变量：记录当前正在查看的商机 ID
 staged_data = None    # 全局变量：暂存待保存的数据 (Staging Area)
+pending_action = None # 全局变量：挂起的交互动作 (e.g., {'type': 'select', 'candidates': [...]})
 
 # --- UI Template Loader (CLI Specific) ---
 ui_templates = {}
@@ -230,6 +231,64 @@ def _interactive_review_loop(data: dict, save_handler, is_new=False):
             console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
             current_data = controller.update(current_data, user_input)
 
+def handle_create_logic(content):
+    """处理 CREATE 意图 (无状态/暂存模式)"""
+    global staged_data, current_opp_id, pending_action
+    
+    console.print(Panel(f"[bold cyan]{get_random_ui('polishing_start')}[/bold cyan]", style="cyan"))
+    console.print(Panel(f"[bold yellow]{get_random_ui('analysis_start')}[/bold yellow]", title="处理中"))
+
+    # 调用核心业务逻辑
+    result_pkg = controller.process_create_request(content)
+    
+    if result_pkg["status"] == "error":
+        console.print(f"[red]{result_pkg.get('message', '处理失败')}[/red]")
+        return
+
+    draft = result_pkg["draft"]
+    status = result_pkg["status"]
+    
+    # 结果分支处理
+    if status == "linked":
+        # 自动关联成功
+        match = result_pkg["linked_target"]
+        current_opp_id = match["id"]
+        
+        # 获取旧档案并合并
+        old_data = controller.get_opportunity_by_id(match["id"])
+        if old_data:
+            staged_data = controller.merge_draft_into_old(old_data, draft)
+        else:
+            staged_data = draft
+            
+        console.print(f"[dim]已自动关联现有项目: {match['name']} (ID: {match['id']})[/dim]")
+        
+    elif status == "ambiguous":
+        # 发现疑似项目 -> 进入挂起选择模式
+        pending_action = {
+            "type": "select_ambiguity", 
+            "intent": "CREATE", 
+            "candidates": result_pkg["candidates"],
+            "draft": draft
+        }
+        console.print("[yellow]🔍 发现疑似现有项目，请输入序号进行关联，或选择新建。[/yellow]")
+        return 
+        
+    else: # status == "new"
+        current_opp_id = None
+        staged_data = draft
+        console.print("[dim]识别为新项目草稿。[/dim]")
+
+    # 缺失字段告知
+    missing = result_pkg["missing_fields"]
+    if missing:
+        msg = "[yellow]⚠️  当前草稿缺失关键信息：[/yellow] " + ", ".join([v[0] for v in missing.values()])
+        console.print(msg)
+
+    # 展示结果
+    display_result_human_readable(staged_data)
+    console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 或 '保存' 即可写入数据库。[/bold green]")
+
 def handle_get_logic(content):
     """处理 GET 意图"""
     global current_opp_id
@@ -371,7 +430,7 @@ def manage():
 @cli_app.command()
 def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = False, save: bool = False, debug: bool = False):
     """CLI 核心分析流程 (Refactored Intent Dispatcher)"""
-    global staged_data, current_opp_id
+    global staged_data, current_opp_id, pending_action
     
     # 处理初始输入（来自命令行参数）
     if use_mic:
@@ -389,6 +448,105 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
 
     # 主交互循环：持续等待用户输入，直到选择退出
     while True:
+        # 0. 优先处理挂起的交互 (模拟 GUI 按钮/光标选择)
+        if pending_action:
+            if pending_action["type"] == "select_ambiguity":
+                candidates = pending_action["candidates"]
+                intent = pending_action.get("intent", "UNKNOWN")
+                
+                # 模拟按钮展示
+                console.print(Panel(f"[yellow]请选择操作 (输入序号或ID):[/yellow]", style="yellow"))
+                for i, cand in enumerate(candidates):
+                    cid = cand.get('id', '无ID')
+                    console.print(f"[{i+1}] 关联/查看: {cand['name']} (ID: {cid})")
+                
+                if intent == "CREATE":
+                    console.print(f"[{len(candidates)+1}] 新建项目")
+                
+                console.print(f"[Q] 放弃操作")
+                
+                choice = typer.prompt("您的选择", show_default=False).strip()
+                
+                if choice.upper() == 'Q':
+                    console.print("[dim]操作已取消。[/dim]")
+                    pending_action = None
+                    continue
+
+                # 处理选择逻辑
+                selected_cand = None
+                is_create_new = False
+                
+                if choice.isdigit():
+                    idx = int(choice)
+                    if 1 <= idx <= len(candidates):
+                        selected_cand = candidates[idx-1]
+                    elif intent == "CREATE" and idx == len(candidates) + 1:
+                        is_create_new = True
+                
+                # 尝试 ID 匹配
+                if not selected_cand and not is_create_new:
+                    for cand in candidates:
+                        if str(cand.get("id")) == choice:
+                            selected_cand = cand
+                            break
+                            
+                if selected_cand:
+                    # 选中了某个项目
+                    console.print(f"[green]已选择: {selected_cand['name']}[/green]")
+                    
+                    if intent == "CREATE":
+                        # CREATE 关联逻辑
+                        draft = pending_action["draft"] # 之前暂存的草稿
+                        old_data = controller.get_opportunity_by_id(selected_cand["id"])
+                        if old_data:
+                            # 统一合并逻辑
+                            staged_data = controller.merge_draft_into_old(old_data, draft)
+                            current_opp_id = old_data["id"]
+                            console.print("[dim]已关联旧档案。[/dim]")
+                            
+                            # 重新检查缺失
+                            missing = controller.get_missing_fields(staged_data)
+                            if missing:
+                                msg = "[yellow]⚠️  合并后仍缺失：[/yellow] " + ", ".join([v[0] for v in missing.values()])
+                                console.print(msg)
+                            
+                            display_result_human_readable(staged_data)
+                            console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 即可写入数据库。[/bold green]")
+                            
+                    else: # GET / UPDATE / DELETE
+                        target = controller.get_opportunity_by_id(selected_cand["id"])
+                        if target:
+                            current_opp_id = target.get("id")
+                            if intent == "GET":
+                                console.clear(); display_result_human_readable(target)
+                            elif intent == "UPDATE":
+                                # 恢复之前的 prompt 内容比较困难，因为是无状态的
+                                # 但 pending_action 可以存 prompt
+                                # 简化处理：选中后，提示用户重新输入修改指令，或者直接进入锁定状态
+                                console.print(f"[green]已锁定: {target.get('project_opportunity',{}).get('project_name')}[/green]")
+                                console.print("请重新输入修改指令 (例如: 把预算改为50万)")
+                            elif intent == "DELETE":
+                                handle_delete_logic(str(target.get("id"))) # Re-trigger delete with ID
+                    
+                    pending_action = None # 清除状态
+                    
+                elif is_create_new:
+                    console.print("[green]确认新建项目。[/green]")
+                    staged_data = pending_action["draft"]
+                    current_opp_id = None
+                    missing = controller.get_missing_fields(staged_data)
+                    if missing:
+                        msg = "[yellow]⚠️  当前草稿缺失：[/yellow] " + ", ".join([v[0] for v in missing.values()])
+                        console.print(msg)
+                    display_result_human_readable(staged_data)
+                    console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 即可写入数据库。[/bold green]")
+                    pending_action = None
+                else:
+                    console.print("[red]无效选择，请重试。[/red]")
+                
+                # Loop again to keep blocking until valid selection
+                continue
+
         # 检查退出命令
         if content.strip().lower() in ["quit", "exit", "q", "退出"]:
             console.print("[dim]已退出分析模式。[/dim]")
@@ -398,18 +556,14 @@ def run_analyze(content: str = None, audio_file: str = None, use_mic: bool = Fal
         if content.strip().lower() in ["save", "保存", "存", "s"]:
             if staged_data:
                 # 执行保存
-                # 注意：controller.save 内部处理了新建和更新逻辑 (依靠 ID 判断)
-                # 这里我们假设 staged_data 已经是完整的对象
-                # 为了兼容 controller.save 的参数签名 (record, raw_content)，这里 raw_content 传空即可，因为摘要已生成
                 rid, fpath = controller.save(staged_data, raw_content="")
-                
                 console.print(f"[bold green]{get_random_ui('db_save_success', record_id=rid)}[/bold green]")
                 current_opp_id = rid
                 staged_data = None # 清空暂存区
             else:
                 console.print("[yellow]暂存区为空，没有可保存的内容。[/yellow]")
             
-            # 重新获取输入，跳过后续意图识别
+            # 重新获取输入
             console.print("")
             content = typer.prompt("请输入内容")
             continue

@@ -164,11 +164,31 @@ def render_report(data):
 
         st.divider()
         st.markdown("#### 📜 跟进记录")
+        
+        # 1. 展示本次待保存的小记 (如果有)
+        # 逻辑：如果 summary 存在，且跟最近一条 log 不重复（防止保存后刷新页面出现双份），则展示
+        curr_summary = data.get("summary")
         record_logs = data.get("record_logs", [])
+        
+        is_duplicate = False
+        if record_logs and curr_summary:
+            last_log_content = record_logs[-1].get("content", "")
+            if curr_summary.strip() == last_log_content.strip():
+                is_duplicate = True
+        
+        if curr_summary and not is_duplicate:
+            with st.chat_message("user", avatar="🆕"):
+                st.caption("本次待保存")
+                st.markdown(curr_summary)
+
+        # 2. 展示历史记录
         if record_logs:
+            # 倒序显示，最近3条
             for log in sorted(record_logs, key=lambda x: x.get("time", ""), reverse=True)[:3]:
                 st.caption(f"{log.get('time')} - {log.get('recorder')}")
                 st.markdown(log.get("content"))
+        elif not curr_summary:
+            st.caption("暂无跟进记录")
 
 def display_chat():
     for msg in st.session_state.messages:
@@ -203,6 +223,10 @@ def handle_missing(missing_map):
 def handle_logic(prompt):
     if not prompt: return
     
+    # 如果有挂起的交互动作，忽略新的文本输入 (强制用户点击按钮)
+    if st.session_state.pending_action:
+        return
+
     # 始终重入意图识别 (无状态)
     with st.spinner("正在分析意图..."):
         result = st.session_state.controller.identify_intent(prompt)
@@ -218,9 +242,18 @@ def handle_logic(prompt):
         
         st.session_state.staged_data = pkg["draft"]
         if pkg["status"] == "linked":
-            st.session_state.current_opp_id = pkg["linked_target"]["id"]
-            add_ai_message(f"✅ 自动关联：**{pkg['linked_target']['name']}**")
-            handle_missing(pkg["missing_fields"])
+            match = pkg["linked_target"]
+            st.session_state.current_opp_id = match["id"]
+            
+            # 获取旧档案并合并
+            old_data = st.session_state.controller.get_opportunity_by_id(match["id"])
+            if old_data:
+                st.session_state.staged_data = st.session_state.controller.merge_draft_into_old(old_data, pkg["draft"])
+            
+            add_ai_message(f"✅ 自动关联：**{match['name']}**")
+            # 重新检查缺失 (基于合并后的数据)
+            missing = st.session_state.controller.get_missing_fields(st.session_state.staged_data)
+            handle_missing(missing)
             
         elif pkg["status"] == "ambiguous":
             st.session_state.pending_action = {"type": "create_ambiguity", "candidates": pkg["candidates"]}
@@ -280,13 +313,19 @@ if st.session_state.pending_action:
             cols = st.columns(len(pa["candidates"]) + 1)
             for i, cand in enumerate(pa["candidates"]):
                 if cols[i].button(f"关联: {cand['name']}", key=f"assoc_{cand['id']}"):
-                    st.session_state.staged_data["id"] = cand["id"]
-                    st.session_state.staged_data["project_opportunity"]["project_name"] = cand["name"]
                     st.session_state.current_opp_id = cand["id"]
+                    
+                    # 获取旧档案并合并
+                    old_data = st.session_state.controller.get_opportunity_by_id(cand["id"])
+                    if old_data:
+                        # 注意：此时 staged_data 里存的是 Draft
+                        merged = st.session_state.controller.merge_draft_into_old(old_data, st.session_state.staged_data)
+                        st.session_state.staged_data = merged
+                    
                     st.session_state.pending_action = None
                     add_ai_message(f"✅ 已关联至: {cand['name']}")
                     
-                    # 关联后展示详情并检查缺失
+                    # 重新检查缺失
                     missing = st.session_state.controller.get_missing_fields(st.session_state.staged_data)
                     handle_missing(missing)
                     st.rerun()
@@ -299,6 +338,11 @@ if st.session_state.pending_action:
                 missing = st.session_state.controller.get_missing_fields(st.session_state.staged_data)
                 handle_missing(missing)
                 st.rerun()
+            if st.button("放弃本次录入", key="discard_create_btn"):
+                st.session_state.staged_data = None
+                st.session_state.pending_action = None
+                add_ai_message("已放弃本次录入草稿。")
+                st.rerun()
         
         elif pa["type"] == "search_ambiguity":
             for cand in pa["candidates"]:
@@ -307,6 +351,10 @@ if st.session_state.pending_action:
                     # Re-trigger logic with the selected ID
                     handle_logic(f"查看 ID {cand['id']}")
                     st.rerun()
+            if st.button("取消选择", key="cancel_search_btn"):
+                st.session_state.pending_action = None
+                add_ai_message("已取消选择。")
+                st.rerun()
                     
         elif pa["type"] == "confirm_delete":
             c1, c2 = st.columns(2)
@@ -356,11 +404,13 @@ with c_plus:
             tmp = Path(f"data/tmp/{f.name}"); tmp.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp, "wb") as _f: _f.write(f.getbuffer())
             st.session_state.transcribe_path = tmp; st.session_state.transcribing = True; st.rerun()
-with c_in: st.text_area("输入", placeholder="在此输入指令...", label_visibility="collapsed", key="chat_input_area", height=68)
-with c_mic: st.audio_input("录音", label_visibility="collapsed", key="mic_input")
+            
+is_input_disabled = bool(st.session_state.pending_action)
+with c_in: st.text_area("输入", placeholder="在此输入指令..." if not is_input_disabled else "请先点击上方按钮完成选择...", label_visibility="collapsed", key="chat_input_area", height=68, disabled=is_input_disabled)
+with c_mic: st.audio_input("录音", label_visibility="collapsed", key="mic_input") # Audio input might not support disabled, assume text is primary
 with c_send: 
     st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
-    st.button("🚀", type="primary", use_container_width=True, key="final_send_btn")
+    st.button("🚀", type="primary", use_container_width=True, key="final_send_btn", disabled=is_input_disabled)
 
 # JS for Enter key submission
 components.html("""

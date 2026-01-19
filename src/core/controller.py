@@ -731,6 +731,37 @@ class LinkSellController:
         # 3. 多结果歧义
         return None, candidates, "ambiguous"
 
+    def merge_draft_into_old(self, old_data, draft):
+        """
+        智能合并：将 Draft (新录入) 中的有效信息合并到 Old (旧档案) 中。
+        仅覆盖 Draft 中非空的字段，防止把旧档案里的数据冲掉。
+        """
+        import copy
+        merged = copy.deepcopy(old_data)
+        
+        # 1. 顶层字段合并
+        for k, v in draft.items():
+            if k in ["project_opportunity", "customer_info"]: continue # 单独处理
+            if v: # 只有非空值才覆盖 (None, "", [], {} 都不覆盖)
+                merged[k] = v
+                
+        # 2. 嵌套字段合并 (Project Opportunity)
+        if "project_opportunity" not in merged: merged["project_opportunity"] = {}
+        draft_opp = draft.get("project_opportunity", {})
+        for k, v in draft_opp.items():
+            if v: merged["project_opportunity"][k] = v
+            
+        # 3. 嵌套字段合并 (Customer Info)
+        if "customer_info" not in merged: merged["customer_info"] = {}
+        draft_cust = draft.get("customer_info", {})
+        for k, v in draft_cust.items():
+            if v: merged["customer_info"][k] = v
+            
+        # 4. 强制更新 Summary (这是本次的小记核心)
+        merged["summary"] = draft.get("summary", "")
+        
+        return merged
+
     def process_create_request(self, content):
         """
         [核心业务逻辑] 处理新建商机请求
