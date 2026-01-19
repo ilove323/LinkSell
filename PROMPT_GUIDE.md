@@ -1,4 +1,4 @@
-# LinkSell Prompt 使用指南 (v2.5)
+# LinkSell Prompt 使用指南 (v3.1)
 
 本文档详细记录所有 prompt 文件的功能、使用场景、调用方式和参数说明。
 
@@ -11,7 +11,8 @@
 | **CREATE** | `create_sales.txt` | 从文本生成结构化 JSON 商机数据 | `controller.analyze()` | JSON 对象 |
 | **GET** | `query_sales.txt` | 根据现有 JSON 回答具体查询 | `controller.query()` | 纯文本答案 |
 | **LIST** | `query_sales.txt` | 根据 JSON 列表回答列表查询 | `controller.query()` | 纯文本答案 |
-| **UPDATE** | `update_sales.txt` | 根据自然语言修改 JSON | `controller.update()` | JSON 对象 |
+| **REPLACE** | `sales_architect.txt` | 根据自然语言修改 JSON 字段 | `controller.replace()` | JSON 对象 |
+| **MERGE** | (无) | 直接追加笔记到 record_logs | `controller.merge()` | JSON 对象（含新 log） |
 | **CONTEXT**| `extract_search_term.txt`| 判断指令中的实体指向 | `controller.extract_search_term()`| 实体名称/空 |
 | **DELETE** | `delete_confirmation.txt` | 删除前生成二次确认提示 | `controller.generate_delete_warning()` | 纯文本提示 |
 | **OTHER** | (无) | 返回秘书语气拒绝 | CLI/GUI | 随机语料 |
@@ -50,14 +51,14 @@ sales_data = self.analyze(polished_text)  # 内部调用 create_sales.txt
 
 ---
 
-### 2. UPDATE - `update_sales.txt`
+### 2. REPLACE - `sales_architect.txt`
 
 **功能**: 理解用户的自然语言修改指令，返回更新后的 JSON。支持模糊指令与上下文结合。
 
 **调用方式**:
 ```python
 # controller.py
-updated_data = self.update(original_data, user_instruction)
+updated_data = self.replace(original_data, user_instruction)
 ```
 
 **特殊逻辑**:
@@ -66,14 +67,35 @@ updated_data = self.update(original_data, user_instruction)
 
 ---
 
-### 3. CONTEXT - `extract_search_term.txt`
+### 3. MERGE - (无专用 Prompt)
+
+**功能**: 将笔记直接追加到商机的 record_logs，无需修改其他字段。
+
+**调用方式**:
+```python
+# controller.py
+merged_data = self.merge(opportunity_data, note_content)
+```
+
+**特点**:
+- 纯追加逻辑，不修改商机任何其他字段
+- 用于 SAVE 意图：将暂存笔记追加到当前商机的跟进记录
+- 新增 log 条目包含：`time`, `recorder`, `content`
+
+---
+
+### 4. CONTEXT - `extract_search_term.txt`
 
 **功能**: 从用户输入中提取核心实体（项目名/客户名）。
 
-**重要性 (v2.5)**: 
-- 此 Prompt 在 **UPDATE** 流程中起关键作用。
-- 用于判断用户的指令是 **“针对特定项目”** (如 "修改沈阳机床的预算") 还是 **“针对当前上下文”** (如 "把预算改了")。
+**重要性 (v3.1)**: 
+- 此 Prompt 在 **REPLACE** 流程中起关键作用。
+- 用于判断用户的指令是 **"针对特定项目"** (如 "修改沈阳机床的预算") 还是 **"针对当前上下文"** (如 "把预算改了")。
 - 若此 Prompt 提取结果为空或不明确，Controller 将尝试使用全局 `current_opp_id`。
+
+---
+
+### 5. GET/LIST - `query_sales.txt`
 
 ---
 

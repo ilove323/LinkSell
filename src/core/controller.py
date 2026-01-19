@@ -91,17 +91,19 @@ class LinkSellController:
             # JSON 解析失败，降级为关键词判断 (V3.0 置换版)
             intent = "RECORD" # 默认归为笔记暂存
             content = text
-            if any(k in text for k in ["正式保存", "正式录入", "提交到", "创建项目", "新建项目", "存入商机"]): 
+            if any(k in text for k in ["保存"]): 
+                intent = "SAVE"
+            elif any(k in text for k in ["正式保存", "正式录入", "提交到", "创建项目", "新建项目", "存入商机"]): 
                 intent = "CREATE"
             elif any(k in text for k in ["查", "找", "看", "哪些", "搜索", "列表"]): 
                 intent = "LIST"
             elif any(k in text for k in ["删", "移除"]): 
                 intent = "DELETE"
             elif any(k in text for k in ["改", "更新", "换"]): 
-                intent = "UPDATE"
+                intent = "REPLACE"
         
         # 严格规范化意图
-        valid_intents = ["CREATE", "LIST", "GET", "UPDATE", "DELETE", "RECORD", "OTHER"]
+        valid_intents = ["CREATE", "LIST", "GET", "REPLACE", "DELETE", "RECORD", "SAVE", "MERGE", "OTHER"]
         if intent not in valid_intents:
             intent = "RECORD"
         
@@ -112,7 +114,6 @@ class LinkSellController:
                 intent = "RECORD"
         
         return {"intent": intent, "content": content}
-        return intent
 
     def extract_search_term(self, text):
         """
@@ -319,9 +320,36 @@ class LinkSellController:
                 missing[field_key] = (field_name, parent_key)
         return missing
 
-    def update(self, data, instruction):
+    def merge(self, data: dict, note_content: str) -> dict:
         """
-        UPDATE 流程：修改商机数据 (V3.0 使用 Architect 引擎)
+        MERGE 流程：将笔记追加到record_logs（不修改其他字段）
+        
+        用于: SAVE 意图，纯追加小记
+        返回: 更新后的商机数据（包含新增的record_log条目）
+        """
+        import datetime
+        now = datetime.datetime.now()
+        
+        # 初始化 record_logs（如果不存在）
+        if "record_logs" not in data:
+            data["record_logs"] = []
+        
+        # 创建新的log条目
+        new_log_entry = {
+            "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "recorder": self.default_recorder,
+            "content": note_content
+        }
+        
+        # 追加到record_logs
+        data["record_logs"].append(new_log_entry)
+        data["updated_at"] = now.isoformat()
+        
+        return data
+
+    def replace(self, data, instruction):
+        """
+        REPLACE 流程：修改商机数据 (V3.0 使用 Architect 引擎)
         """
         # 将单条指令视为一条笔记，利用 Architect 的合并能力
         updated_data = architect_analyze(
@@ -580,6 +608,32 @@ class LinkSellController:
                 print(f"Delete error: {{e}}")
                 return False
         return False
+
+    def merge_draft_into_old(self, old_data: dict, draft_data: dict) -> dict:
+        """
+        [合并逻辑] 将笔记草稿合并到现有商机
+        
+        用于: 用户通过笔记(RECORD)最后执行CREATE，系统发现笔记涉及现有商机时触发
+        流程: RECORD → handle_record() → (笔记积累) → CREATE → handle_create() 
+             → process_commit_request() 检测到 linked → 调用本方法合并
+        
+        返回: 合并后的完整商机数据
+        """
+        merged = old_data.copy()
+        
+        # 逐字段合并，draft 优先级高（新数据覆盖旧数据）
+        # 但保留 old_data 的关键字段（id, _file_path, created_at 等）
+        for key, value in draft_data.items():
+            if key not in ["id", "_file_path", "_temp_id", "created_at"]:
+                merged[key] = value
+        
+        # 特殊处理嵌套的 project_opportunity 字段
+        if "project_opportunity" in draft_data:
+            if "project_opportunity" not in merged:
+                merged["project_opportunity"] = {}
+            merged["project_opportunity"].update(draft_data["project_opportunity"])
+        
+        return merged
 
     def overwrite_opportunity(self, new_data):
         """

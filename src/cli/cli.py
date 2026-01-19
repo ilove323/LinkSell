@@ -13,12 +13,19 @@ LinkSell CLI 主程序
 
 import typer
 import json
+import importlib
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 from rich.text import Text
+
+# 强制重载核心模块（确保最新代码生效）
+import src.core.controller
+importlib.reload(src.core.controller)
+import src.core.conversational_engine
+importlib.reload(src.core.conversational_engine)
 
 from src.core.conversational_engine import ConversationalEngine
 
@@ -36,13 +43,15 @@ def _safe_str(value):
 
 
 def load_ui_templates():
-    """加载UI话术模板"""
+    """加载UI话术模板（自动过滤废弃的_deprecated_前缀键）"""
     templates = {}
     templates_path = Path("config/ui_templates.json")
     if templates_path.exists():
         try:
             with open(templates_path, "r", encoding="utf-8") as f:
-                templates = json.load(f)
+                all_templates = json.load(f)
+                # 过滤掉_deprecated_开头的废弃键
+                templates = {k: v for k, v in all_templates.items() if not k.startswith("_deprecated_")}
         except Exception as e:
             console.print(f"[yellow]警告：UI语料库加载失败({e})，将使用默认提示。[/yellow]")
     return templates
@@ -292,7 +301,12 @@ def main(use_voice: bool = False):
                     f"📝 [bold green]{result['message']}[/bold green]\n\n[dim]{result['polished_content']}[/dim]",
                     style="green"
                 ))
-                console.print("[dim]您可以继续输入内容追加笔记，或说'创建'进行提交。[/dim]")
+                # 根据是否有当前商机上下文显示不同的提示
+                if result.get("has_context"):
+                    current_name = result.get("current_opp_name", "当前商机")
+                    console.print(f"[dim]您可以继续输入内容追加笔记，或说'保存'保存至{current_name}/'创建'进行提交新商机。[/dim]")
+                else:
+                    console.print("[dim]您可以继续输入内容追加笔记，或说'创建'进行提交新商机。[/dim]")
             elif result_type == "error":
                 display_error(result.get("message","未知错误"))
             else:

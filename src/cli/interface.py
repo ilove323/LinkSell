@@ -229,7 +229,7 @@ def _interactive_review_loop(data: dict, save_handler, is_new=False):
         else:
             # 3. 修改指令
             console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
-            current_data = controller.update(current_data, user_input)
+            current_data = controller.replace(current_data, user_input)
 
 def handle_record_logic(content):
     """处理 RECORD 意图 (V3.0 笔记暂存模式)"""
@@ -374,7 +374,7 @@ def handle_update_logic(content):
     
     # 3. 执行更新 (纯逻辑，不存盘)
     console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
-    updated_result = controller.update(target, content)
+    updated_result = controller.replace(target, content)
     
     # 4. 存入暂存区
     staged_data = updated_result

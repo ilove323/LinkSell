@@ -17,6 +17,7 @@ import sys
 import time
 import json
 import copy
+import importlib
 from pathlib import Path
 import streamlit.components.v1 as components
 
@@ -24,6 +25,12 @@ import streamlit.components.v1 as components
 root = Path(__file__).parent.parent.parent
 if str(root) not in sys.path:
     sys.path.append(str(root))
+
+# 强制重载核心模块（确保最新代码生效）
+import src.core.controller
+importlib.reload(src.core.controller)
+import src.core.conversational_engine
+importlib.reload(src.core.conversational_engine)
 
 from src.core.conversational_engine import ConversationalEngine
 
@@ -56,12 +63,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==================== Init Session State ====================
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 
 if "ui_templates" not in st.session_state:
     try:
         with open("config/ui_templates.json", "r", encoding="utf-8") as f:
-            st.session_state.ui_templates = json.load(f)
+            all_templates = json.load(f)
+            # 过滤掉_deprecated_开头的废弃键
+            st.session_state.ui_templates = {k: v for k, v in all_templates.items() if not k.startswith("_deprecated_")}
     except:
         st.session_state.ui_templates = {}
 
@@ -99,38 +108,39 @@ def add_user_message(content: str):
     st.session_state.messages.append({"role": "user", "content": content})
 
 
-def handle_voice_input():
-    """处理语音输入"""
-    if "voice_input" not in st.session_state:
-        st.session_state.voice_input = None
+def handle_voice_input(audio_data):
+    """直接处理语音输入：转文字 → 发送（不保存到 session_state，避免widget冲突）"""
+    if not audio_data:
+        return
     
     if "last_voice_hash" not in st.session_state:
         st.session_state.last_voice_hash = None
     
-    audio_data = st.session_state.voice_input
-    if audio_data:
-        # 计算音频哈希值，避免重复处理同一音频
-        audio_hash = hash(audio_data.getvalue())
-        if st.session_state.last_voice_hash != audio_hash:
-            # 保存音频文件
-            tmp_path = Path(f"data/tmp/voice_{int(time.time())}.wav")
-            tmp_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(tmp_path, "wb") as f:
-                f.write(audio_data.getbuffer())
-            
-            # 调用引擎处理语音
-            with st.spinner("🎙️ 正在处理语音..."):
-                try:
-                    result = st.session_state.engine.handle_voice_input(str(tmp_path))
-                    if result.get("status") == "success":
-                        # 将处理后的文字放入输入框
-                        st.session_state.voice_text = result.get("text", "")
-                        st.session_state.last_voice_hash = audio_hash
-                        st.session_state.voice_input = None  # 清空语音输入
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"语音处理失败: {e}")
+    # 计算音频哈希值，避免重复处理同一音频
+    audio_hash = hash(audio_data.getvalue())
+    if st.session_state.last_voice_hash == audio_hash:
+        return  # 同一个音频已处理过，跳过
+    
+    # 保存音频文件
+    tmp_path = Path(f"data/tmp/voice_{int(time.time())}.wav")
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(tmp_path, "wb") as f:
+        f.write(audio_data.getbuffer())
+    
+    # 调用引擎处理语音
+    with st.spinner("🎙️ 正在处理语音..."):
+        try:
+            result = st.session_state.engine.handle_voice_input(str(tmp_path))
+            if result.get("status") == "success":
+                # 直接发送转换后的文字
+                voice_text = result.get("text", "")
+                st.session_state.last_voice_hash = audio_hash
+                if voice_text.strip():
+                    process_user_input(voice_text)
+                    st.rerun()
+        except Exception as e:
+            st.error(f"语音处理失败: {e}")
 
 
 def add_report_message(data: dict):
@@ -269,7 +279,11 @@ def process_user_input(user_input: str):
             add_ai_message(result["message"])
     elif result_type == "record":
         add_ai_message(f"📝 {result['message']}\n\n{result['polished_content']}")
-        add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交。")
+        if result.get("has_context"):
+            current_name = result.get("current_opp_name", "当前商机")
+            add_ai_message(f"您可以继续输入内容追加笔记，或说'保存'保存至{current_name}/'创建'进行提交新商机。")
+        else:
+            add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交新商机。")
     elif result_type == "error":
         add_ai_message(result.get("message", "未知错误"))
     else:
@@ -417,7 +431,11 @@ def _handle_record_result(result: dict):
     """处理RECORD结果"""
     if result["status"] == "success":
         add_ai_message(f"📝 {result['message']}\n\n{result['polished_content']}")
-        add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交。")
+        if result.get("has_context"):
+            current_name = result.get("current_opp_name", "当前商机")
+            add_ai_message(f"您可以继续输入内容追加笔记，或说'保存'保存至{current_name}/'创建'进行提交新商机。")
+        else:
+            add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交新商机。")
 
 
 # ==================== Main Chat Interface ====================
@@ -459,43 +477,46 @@ if user_input:
     process_user_input(user_input)
     st.rerun()
 
-# 如果有语音转文字的内容，优先处理
-if "voice_text" in st.session_state and st.session_state.voice_text:
-    user_input = st.session_state.voice_text
-    st.session_state.voice_text = ""  # 清空
-    process_user_input(user_input)
-    st.rerun()
-
 # 工具栏：语音录制 + 文件上传
 col_mic, col_upload, col_spacer = st.columns([1, 1.2, 10])
 
 with col_mic:
-    st.audio_input("🎙️ 录音", label_visibility="collapsed", key="voice_input")
-    handle_voice_input()
+    voice_audio = st.audio_input("🎙️ 录音", label_visibility="collapsed", key="voice_input")
+    if voice_audio:
+        handle_voice_input(voice_audio)
 
 with col_upload:
     # 文件上传
     uploaded_file = st.file_uploader("📁 上传音频", type=["wav", "mp3", "m4a"], label_visibility="collapsed", key="audio_file_uploader")
+    
+    # 使用独立的flag来追踪是否已处理当前文件
+    if "last_audio_file_id" not in st.session_state:
+        st.session_state.last_audio_file_id = None
+    
     if uploaded_file:
-        # 保存上传的文件
-        tmp_path = Path(f"data/tmp/{uploaded_file.name}")
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        # 计算文件ID来判断是否是新文件
+        file_id = f"{uploaded_file.name}_{uploaded_file.size}_{uploaded_file.modified_at}"
         
-        # 处理音频
-        with st.spinner("📁 正在处理上传的音频..."):
-            try:
-                result = st.session_state.engine.handle_voice_input(str(tmp_path))
-                if result.get("status") == "success":
-                    st.session_state.voice_text = result.get("text", "")
-                    st.session_state.audio_file_uploader = None  # 清空
-                    st.success("音频处理完成，已填充到输入框")
-                    st.rerun()
-                else:
-                    st.error(f"处理失败: {result.get('message', '未知错误')}")
-            except Exception as e:
-                st.error(f"处理失败: {e}")
+        if st.session_state.last_audio_file_id != file_id:
+            # 保存上传的文件
+            tmp_path = Path(f"data/tmp/{uploaded_file.name}")
+            tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            # 处理音频
+            with st.spinner("📁 正在处理上传的音频..."):
+                try:
+                    result = st.session_state.engine.handle_voice_input(str(tmp_path))
+                    if result.get("status") == "success":
+                        st.session_state.voice_text = result.get("text", "")
+                        st.session_state.last_audio_file_id = file_id
+                        st.success("音频处理完成，已填充到输入框")
+                        st.rerun()
+                    else:
+                        st.error(f"处理失败: {result.get('message', '未知错误')}")
+                except Exception as e:
+                    st.error(f"处理失败: {e}")
 
 # 处理待处理的歧义或确认动作
 if st.session_state.pending_action:

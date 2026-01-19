@@ -2,7 +2,7 @@
 对话引擎 (Conversational Engine)
 
 职责：
-- 处理所有意图的业务逻辑 (GET/LIST/UPDATE/CREATE/DELETE/RECORD)
+- 处理所有意图的业务逻辑 (GET/LIST/REPLACE/CREATE/DELETE/RECORD/SAVE/MERGE)
 - 返回结构化的结果给UI层 (CLI/GUI)
 - 管理对话流程和状态
 
@@ -161,10 +161,10 @@ class ConversationalEngine:
         else:
             return f"✨ 已识别并生成新商机草稿：{proj_name}"
     
-    # ==================== UPDATE 意图 ====================
-    def handle_update(self, content: str, context_id=None) -> dict:
+    # ==================== REPLACE 意图 ====================
+    def handle_replace(self, content: str, context_id=None) -> dict:
         """
-        处理UPDATE意图：修改商机信息
+        处理REPLACE意图：修改商机信息
         
         返回格式：
         {
@@ -196,8 +196,8 @@ class ConversationalEngine:
                 "data": None
             }
         
-        # 执行更新
-        updated_result = self.controller.update(target, content)
+        # 执行替换（修改字段）
+        updated_result = self.controller.replace(target, content)
         
         # 直接保存（不需要确认）
         success = self.controller.overwrite_opportunity(updated_result)
@@ -304,18 +304,159 @@ class ConversationalEngine:
             "status": "success",
             "message": "笔记已暂存",
             "note_count": 数字,
-            "polished_content": "润色后的内容"
+            "polished_content": "润色后的内容",
+            "has_context": bool,  # 是否有当前商机上下文
+            "current_opp_name": str  # 当前商机名称（如果有）
         }
         """
         polished = self.controller.add_to_note_buffer(content)
         count = len(self.controller.note_buffer)
         
+        # 检查是否有当前商机上下文
+        has_context = False
+        current_opp_name = None
+        if self.current_opp_id:
+            current_opp = self.controller.get_opportunity_by_id(self.current_opp_id)
+            if current_opp:
+                has_context = True
+                current_opp_name = current_opp.get("project_opportunity", {}).get("project_name", "当前商机")
+        
         return {
             "status": "success",
             "message": f"📝 笔记已暂存 ({count}条)",
             "note_count": count,
-            "polished_content": polished
+            "polished_content": polished,
+            "has_context": has_context,
+            "current_opp_name": current_opp_name
         }
+    
+    def handle_save(self) -> dict:
+        """
+        处理SAVE意图：将笔记MERGE到当前商机的record_logs
+        
+        返回格式：
+        {
+            "status": "success" | "no_context" | "error",
+            "message": "提示信息",
+            "data": {...}  # 更新后的数据（当status==success时）
+        }
+        """
+        # 检查是否有当前商机上下文
+        if not self.current_opp_id:
+            return {
+                "status": "no_context",
+                "message": "❌ 未设定当前商机，无法保存。请先查看一个商机或使用'创建'新建。",
+                "data": None
+            }
+        
+        # 检查笔记缓冲区是否为空
+        if not self.controller.note_buffer:
+            return {
+                "status": "error",
+                "message": "❌ 笔记为空，没有内容可保存。",
+                "data": None
+            }
+        
+        # 获取当前商机
+        current_opp = self.controller.get_opportunity_by_id(self.current_opp_id)
+        if not current_opp:
+            return {
+                "status": "error",
+                "message": "❌ 当前商机不存在，请重新选择。",
+                "data": None
+            }
+        
+        # 将笔记缓冲区的内容合并
+        note_content = "\n".join(self.controller.note_buffer)
+        
+        # 调用MERGE逻辑将笔记追加到record_logs
+        merged_result = self.controller.merge(current_opp, note_content)
+        
+        # 保存到文件
+        success = self.controller.overwrite_opportunity(merged_result)
+        
+        if success:
+            # 清空笔记缓冲
+            self.controller.clear_note_buffer()
+            
+            opp_name = merged_result.get("project_opportunity", {}).get("project_name", "商机")
+            return {
+                "status": "success",
+                "message": f"✅ 已成功保存笔记至 {opp_name}",
+                "data": merged_result,
+                "type": "detail"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "❌ 保存失败，请稍后重试。",
+                "data": None
+            }
+    
+    # ==================== MERGE 意图 ====================
+    def handle_merge(self) -> dict:
+        """
+        处理MERGE意图：将笔记MERGE到当前商机的record_logs
+        （MERGE与SAVE的区别：SAVE是保存到当前商机，MERGE可能用于其他场景）
+        
+        返回格式：
+        {
+            "status": "success" | "no_context" | "error",
+            "message": "提示信息",
+            "data": {...}  # 更新后的数据（当status==success时）
+        }
+        """
+        # 检查是否有当前商机上下文
+        if not self.current_opp_id:
+            return {
+                "status": "no_context",
+                "message": "❌ 未设定当前商机，无法保存。请先查看一个商机或使用'创建'新建。",
+                "data": None
+            }
+        
+        # 检查笔记缓冲区是否为空
+        if not self.controller.note_buffer:
+            return {
+                "status": "error",
+                "message": "❌ 笔记为空，没有内容可保存。",
+                "data": None
+            }
+        
+        # 获取当前商机
+        current_opp = self.controller.get_opportunity_by_id(self.current_opp_id)
+        if not current_opp:
+            return {
+                "status": "error",
+                "message": "❌ 当前商机不存在，请重新选择。",
+                "data": None
+            }
+        
+        # 将笔记缓冲区的内容合并
+        note_content = "\n".join(self.controller.note_buffer)
+        
+        # 调用MERGE逻辑将笔记追加到record_logs
+        merged_result = self.controller.merge(current_opp, note_content)
+        
+        # 保存到文件
+        success = self.controller.overwrite_opportunity(merged_result)
+        
+        if success:
+            # 清空笔记缓冲
+            self.controller.clear_note_buffer()
+            
+            opp_name = merged_result.get("project_opportunity", {}).get("project_name", "商机")
+            return {
+                "status": "success",
+                "message": f"✅ 已成功保存笔记至 {opp_name}",
+                "data": merged_result,
+                "type": "detail"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "❌ 保存失败，请稍后重试。",
+                "data": None
+            }
     
     # ==================== 确认动作处理 ====================
     def confirm_save(self, new_data=None) -> dict:
@@ -419,7 +560,7 @@ class ConversationalEngine:
                 "data": target,
                 "next_action": "display"
             }
-        elif pending_intent == "UPDATE":
+        elif pending_intent == "REPLACE":
             # 返回target，等待更新指令
             return {
                 "status": "success",
@@ -493,8 +634,8 @@ class ConversationalEngine:
             result = self.handle_create(content)
             result["type"] = "create"
             return result
-        elif intent == "UPDATE":
-            result = self.handle_update(content)
+        elif intent == "REPLACE":
+            result = self.handle_replace(content)
             result["type"] = "update"
             return result
         elif intent == "DELETE":
@@ -504,6 +645,20 @@ class ConversationalEngine:
         elif intent == "RECORD":
             result = self.handle_record(content)
             result["type"] = "record"
+            return result
+        elif intent == "SAVE":
+            result = self.handle_save()
+            if result.get("type") == "detail":
+                result["type"] = "detail"
+            else:
+                result["type"] = "record"  # 保持在笔记界面
+            return result
+        elif intent == "MERGE":
+            result = self.handle_merge()
+            if result.get("type") == "detail":
+                result["type"] = "detail"
+            else:
+                result["type"] = "record"  # 保持在笔记界面
             return result
         else:
             return {

@@ -129,7 +129,7 @@ def summarize_text(content: str, api_key: str, endpoint_id: str) -> str:
 def classify_intent(text: str, api_key: str, endpoint_id: str) -> dict:
     """
     判断用户的意图并提取内容，返回 {"intent": "...", "content": "..."}。
-    意图可以是：CREATE, LIST, GET, UPDATE, DELETE, 或 OTHER。
+    意图可以是：CREATE, LIST, GET, REPLACE, MERGE, DELETE, 或 OTHER。
     """
     client = Ark(api_key=api_key)
     system_prompt = load_prompt("classify_intent")
@@ -160,7 +160,7 @@ def classify_intent(text: str, api_key: str, endpoint_id: str) -> dict:
         # 如果 JSON 解析失败，尝试从纯文本提取 (V3.0 置换版)
         response_upper = response.upper()
         intent = "RECORD"  # 默认值改为记录暂存
-        for keyword in ["CREATE", "RECORD", "LIST", "GET", "UPDATE", "DELETE", "OTHER"]:
+        for keyword in ["CREATE", "RECORD", "LIST", "GET", "REPLACE", "MERGE", "DELETE", "OTHER"]:
             if keyword in response_upper:
                 intent = keyword
                 break

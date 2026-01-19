@@ -299,7 +299,7 @@ def handle_logic(prompt):
                 add_report_message(target)
             elif intent == "UPDATE":
                 with st.spinner("生成修改草稿..."):
-                    upd = st.session_state.controller.update(target, prompt)
+                    upd = st.session_state.controller.replace(target, prompt)
                     st.session_state.staged_data = upd
                 add_ai_message(f"已锁定项目并生成修改草稿。")
                 add_report_message(upd)
