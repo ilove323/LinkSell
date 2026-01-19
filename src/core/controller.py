@@ -208,7 +208,10 @@ class LinkSellController:
         def keyword_filter(data):
             p_name = data.get("project_opportunity", {}).get("project_name", "")
             if not p_name: p_name = data.get("project_name", "")
-            return keyword.lower() in p_name.lower()
+            # 双向包含：搜 "轴承" -> "沈阳轴承" (Keyword in Name)
+            #           搜 "查看沈阳轴承" -> "沈阳轴承" (Name in Keyword)
+            k_low = keyword.lower(); p_low = p_name.lower()
+            return (k_low in p_low) or (len(p_name) > 2 and p_low in k_low)
             
         matches = []
         for p in self.list_opportunities(keyword_filter):
@@ -243,18 +246,29 @@ class LinkSellController:
                     candidates[p_name] = {"name": p_name, "source": "语义相似", "sales_rep": "未知", "id": vm.get("id")} # 向量库暂未返回sales_rep，简化处理
 
         # --- [优化] 精确匹配优先策略 ---
-        # 如果候选项中存在与搜索词完全一致（忽略大小写/空格）的项目，直接锁定该项目，忽略其他模糊结果
         clean_search = project_name.strip().lower()
         exact_match = None
+        contained_match = None
+        max_len = 0
         
         for name, cand in candidates.items():
-            if name.strip().lower() == clean_search:
-                exact_match = cand
-                break
+            c_name = name.strip().lower()
+            
+            # 1. 绝对精确匹配 (最高优先级)
+            if c_name == clean_search:
+                return [cand]
+            
+            # 2. 包含匹配 (Name in SearchTerm) - 处理提取不干净的情况
+            # 例如 Search="商机沈阳机床", Name="沈阳机床"
+            if len(c_name) > 2 and c_name in clean_search:
+                # 贪婪匹配：如果有多个被包含的，取名字最长的那个
+                # (防止搜 "A二期" 时匹配到 "A")
+                if len(c_name) > max_len:
+                    max_len = len(c_name)
+                    contained_match = cand
         
-        if exact_match:
-            # 如果找到精确匹配，只返回这一个
-            return [exact_match]
+        if contained_match:
+            return [contained_match]
 
         return list(candidates.values())
 
@@ -682,3 +696,85 @@ class LinkSellController:
                 conflicts.append(("customer_info", k, label, v_old, v_new))
 
         return conflicts
+
+    def resolve_target_interactive(self, content, current_context_id=None):
+        """
+        [核心业务逻辑] 目标解析流程
+        统一封装 CLI/GUI 的查找逻辑：提取 -> 上下文检查 -> 搜索 -> 结果判定
+        
+        Returns:
+            (target_obj, candidates_list, status_code)
+            status_code: "found_by_context", "found_exact", "ambiguous", "not_found"
+        """
+        search_term = self.extract_search_term(content)
+        
+        # 1. 上下文模糊检查 (Vague Check)
+        is_vague = not search_term or any(k in search_term.lower() for k in ["unknown", "记录", "项目", "修改", "更新", "内容"])
+        
+        if is_vague and current_context_id:
+            target = self.get_opportunity_by_id(current_context_id)
+            if target:
+                return target, [], "found_by_context"
+        
+        # 2. 严格搜索
+        final_term = search_term if search_term else content
+        candidates = self.find_potential_matches(final_term)
+        
+        if not candidates:
+            return None, [], "not_found"
+            
+        if len(candidates) == 1:
+            target = self.get_opportunity_by_id(candidates[0]["id"])
+            if target:
+                return target, [], "found_exact"
+        
+        # 3. 多结果歧义
+        return None, candidates, "ambiguous"
+
+    def process_create_request(self, content):
+        """
+        [核心业务逻辑] 处理新建商机请求
+        封装了：润色 -> 分析 -> 查重(自动关联) -> 缺失检查 的完整链路
+        """
+        # 1. 润色
+        polished = self.polish(content)
+        
+        # 2. 分析
+        draft = self.analyze(polished)
+        if not draft:
+            return {"status": "error", "message": "AI 分析失败，无法提取有效信息。"}
+            
+        # 3. 查重逻辑
+        proj_name = draft.get("project_opportunity", {}).get("project_name")
+        candidates = []
+        linked_target = None
+        status = "new"
+        
+        if proj_name:
+            candidates = self.find_potential_matches(proj_name)
+            # 检查精确匹配
+            for cand in candidates:
+                if cand["name"].strip().lower() == proj_name.strip().lower():
+                    # 精确匹配 -> 自动关联
+                    linked_target = cand
+                    status = "linked"
+                    # 强行同步 ID 和 名字，确保一致性
+                    draft["id"] = cand["id"]
+                    if "project_opportunity" not in draft: draft["project_opportunity"] = {}
+                    draft["project_opportunity"]["project_name"] = cand["name"]
+                    break
+            
+            if status != "linked" and candidates:
+                status = "ambiguous" # 存在模糊匹配
+        
+        # 4. 缺失检查
+        missing = self.get_missing_fields(draft)
+        
+        return {
+            "status": status,
+            "draft": draft,
+            "polished_text": polished,
+            "linked_target": linked_target,
+            "candidates": candidates,
+            "missing_fields": missing
+        }

@@ -230,140 +230,32 @@ def _interactive_review_loop(data: dict, save_handler, is_new=False):
             console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
             current_data = controller.update(current_data, user_input)
 
-def _resolve_target_strictly(raw_input: str):
-    """
-    核心组件：严格目标解析器 (无状态版)。
-    根据用户输入，尝试锁定唯一的商机对象。
-    - 唯一匹配 -> 返回 target
-    - 多项匹配 -> 展示列表 -> 返回 None
-    - 无匹配 -> 返回 None
-    """
-    # 1. 规范化输入：提取项目名
-    search_term = controller.extract_search_term(raw_input)
-    if not search_term: 
-        search_term = raw_input # Fallback
-    
-    console.print(f"[dim]正在搜索目标：'{search_term}'...[/dim]")
-    
-    # 2. 执行搜索
-    candidates = controller.find_potential_matches(search_term)
-    
-    # 3. 结果判定
-    if not candidates:
-        console.print(f"[yellow]未找到与 '{search_term}' 相关的商机。[/yellow]")
-        return None
-        
-    if len(candidates) == 1:
-        # 唯一匹配，直接锁定
-        target = controller.get_opportunity_by_id(candidates[0]["id"])
-        return target
-        
-    # 4. 多结果展示 (无交互)
-    console.print(Panel(f"[yellow]找到多个相关商机，请提供更精确的名称或直接使用 ID：[/yellow]", style="yellow"))
-    for cand in candidates:
-        # 安全获取 ID
-        cid = cand.get('id', '无ID')
-        console.print(f"- [bold cyan]{cid}[/bold cyan] : {cand['name']} ([dim]{cand.get('source', '')}[/dim])")
-    
-    return None
-
-# --- Main Logic Handlers ---
-
-def handle_list_logic(content):
-    """处理 LIST 意图"""
-    # 提取过滤条件
-    search_term = controller.extract_search_term(content)
-    
-    # --- 核心修复：处理泛指逻辑 ---
-    is_full_list = False
-    # 把它转成大写、去空格、去各种乱七八糟的符号再比对，看它还敢不敢装犊子
-    clean_term = search_term.strip().upper().replace("`", "").replace("'", "").replace('"', "")
-    
-    if clean_term in ["ALL", "未知", "UNKNOWN"] or not clean_term:
-        is_full_list = True
-    elif clean_term in ["商机", "项目", "单子", "列表", "全部", "所有"]: # 增加更多中文识别
-        is_full_list = True
-        
-    if is_full_list:
-        console.print("[bold cyan]📋 正在获取全量商机列表...[/bold cyan]")
-        results = controller.list_opportunities() # 不传 filter 就是全量
-    else:
-        console.print(f"[dim]🔍 正在根据关键核心词 '{search_term}' 检索商机...[/dim]")
-        def simple_filter(data):
-            dump_str = json.dumps(data, ensure_ascii=False)
-            return search_term.lower() in dump_str.lower()
-        results = controller.list_opportunities(simple_filter)
-    
-    if results:
-        table = Table(title=f"搜索结果 ({len(results)}条)", show_header=True, header_style="bold magenta")
-        table.add_column("ID", width=12)
-        table.add_column("项目名称")
-        table.add_column("阶段")
-        table.add_column("销售")
-        
-        for opp in results:
-            pid = str(opp.get("id", "未知"))
-            pname = _safe_str(opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知")))
-            stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
-            stage_name = _safe_str(controller.stage_map.get(stage_code, stage_code))
-            sales = _safe_str(opp.get("sales_rep", "-"))
-            table.add_row(pid, pname, stage_name, sales)
-        console.print(table)
-    else:
-        console.print("[yellow]空空如也。[/yellow]")
-
-def handle_create_logic(content):
-    """处理 CREATE 意图 (无状态/暂存模式)"""
-    global staged_data, current_opp_id
-    
-    # 1. 润色 & 分析
-    console.print(Panel(f"[bold cyan]{get_random_ui('polishing_start')}[/bold cyan]", style="cyan"))
-    polished = controller.polish(content)
-    # console.print(Panel(polished, title="[bold green]整理后的文本[/bold green]")) # 简化输出
-
-    console.print(Panel(f"[bold yellow]{get_random_ui('analysis_start')}[/bold yellow]", title="处理中"))
-    result = controller.analyze(polished)
-    if not result: console.print("[red]分析失败。[/red]"); return
-
-    # 2. 自动关联检查 (仅精确匹配)
-    extracted_proj_name = result.get("project_opportunity", {}).get("project_name")
-    if extracted_proj_name:
-        # find_potential_matches 现已支持精确匹配优先
-        candidates = controller.find_potential_matches(extracted_proj_name)
-        # 如果第一个候选项名字完全一样 (忽略大小写)，则自动关联
-        if candidates and candidates[0]["name"].strip().lower() == extracted_proj_name.strip().lower():
-            match = candidates[0]
-            result["id"] = match["id"]
-            # 强行同步名字以防微小差异
-            if "project_opportunity" not in result: result["project_opportunity"] = {}
-            result["project_opportunity"]["project_name"] = match["name"]
-            
-            current_opp_id = match["id"]
-            console.print(f"[dim]已自动关联现有项目: {match['name']} (ID: {match['id']})[/dim]")
-        else:
-            # 是个新项目，重置全局 ID (因为还没存，没有真实 ID)
-            current_opp_id = None
-            console.print("[dim]识别为新项目草稿。[/dim]")
-
-    # 3. 缺失字段告知 (不追问)
-    missing = controller.get_missing_fields(result)
-    if missing:
-        msg = "[yellow]⚠️  当前草稿缺失以下关键信息：[/yellow]\n"
-        for k, (name, _) in missing.items():
-            msg += f"- {name}\n"
-        console.print(Panel(msg, style="yellow"))
-
-    # 4. 存入暂存区
-    staged_data = result
-    
-    # 5. 展示结果
-    display_result_human_readable(staged_data)
-    console.print("[bold green]✅ 草稿已暂存。输入 'SAVE' 或 '保存' 即可写入数据库。[/bold green]")
-
 def handle_get_logic(content):
     """处理 GET 意图"""
     global current_opp_id
-    target = _resolve_target_strictly(content)
+    
+    # 调用核心业务逻辑进行解析 (GET 一般不使用 context_id，除非用户明确指代，这里暂时不传 context_id 以保持纯粹性，
+    # 或者如果希望 GET 也能继承上下文，可以传。通常 GET 是用来切换上下文的，所以传 None 比较合理，
+    # 但如果用户说 "查看详情" 且没有名词，也可以 fallback 到 current。
+    # 为了逻辑统一，我们可以传 current_opp_id，让 controller 判断是否 vague)
+    
+    target, candidates, status = controller.resolve_target_interactive(content, current_opp_id)
+    
+    if status == "not_found":
+        search_term = controller.extract_search_term(content) or content
+        console.print(f"[yellow]未找到与 '{search_term}' 相关的商机。[/yellow]")
+        return
+
+    if status == "ambiguous":
+        console.print(Panel(f"[yellow]找到多个相关商机，请提供更精确的名称或直接使用 ID：[/yellow]", style="yellow"))
+        for cand in candidates:
+            cid = cand.get('id', '无ID')
+            console.print(f"- [bold cyan]{cid}[/bold cyan] : {cand['name']} ([dim]{cand.get('source', '')}[/dim])")
+        return
+
+    if status == "found_by_context":
+        console.print(f"[dim]未检测到明确对象，已自动锁定当前商机：{target.get('project_opportunity',{}).get('project_name')}[/dim]")
+
     if target:
         console.clear()
         display_result_human_readable(target)
@@ -372,24 +264,26 @@ def handle_get_logic(content):
 def handle_update_logic(content):
     """处理 UPDATE 意图 (无状态/暂存模式)"""
     global staged_data, current_opp_id
-    target = None
     
-    # 1. 别急着搜，先瞅瞅是不是在说当前锁定的这哥们儿
-    search_term = controller.extract_search_term(content)
+    # 调用核心业务逻辑进行解析
+    target, candidates, status = controller.resolve_target_interactive(content, current_opp_id)
     
-    # 如果抠不出具体的项目名，或者用户只是泛泛而谈，且咱们手里有锁定好的 ID
-    is_vague = not search_term or any(k in search_term.lower() for k in ["unknown", "记录", "项目", "修改", "更新", "内容"])
+    if status == "not_found":
+        search_term = controller.extract_search_term(content) or content
+        console.print(f"[yellow]未找到与 '{search_term}' 相关的商机。[/yellow]")
+        return
+
+    if status == "ambiguous":
+        console.print(Panel(f"[yellow]找到多个相关商机，请提供更精确的名称或直接使用 ID：[/yellow]", style="yellow"))
+        for cand in candidates:
+            cid = cand.get('id', '无ID')
+            console.print(f"- [bold cyan]{cid}[/bold cyan] : {cand['name']} ([dim]{cand.get('source', '')}[/dim])")
+        return
+
+    if status == "found_by_context":
+        console.print(f"[dim]未检测到明确对象，已自动锁定当前商机：{target.get('project_opportunity',{}).get('project_name')}[/dim]")
     
-    if is_vague and current_opp_id:
-        target = controller.get_opportunity_by_id(current_opp_id)
-        if target:
-            console.print(f"[dim]未检测到明确对象，已自动锁定当前商机：{target.get('project_opportunity',{}).get('project_name')}[/dim]")
-    
-    # 2. 如果还是没锁定，老老实实走严格解析流程（会进交互搜索，但这是定位必须的）
-    if not target:
-        target = _resolve_target_strictly(content)
-        
-    if not target: return
+    # status == "found_exact" or "found_by_context" -> target is valid
     
     # 3. 执行更新 (纯逻辑，不存盘)
     console.print(f"[blue]{get_random_ui('modification_processing')}[/blue]")
@@ -405,7 +299,21 @@ def handle_update_logic(content):
 
 def handle_delete_logic(content):
     """处理 DELETE 意图"""
-    target = _resolve_target_strictly(content)
+    target, candidates, status = controller.resolve_target_interactive(content)
+    
+    if status == "not_found":
+        search_term = controller.extract_search_term(content) or content
+        console.print(f"[yellow]未找到与 '{search_term}' 相关的商机。[/yellow]")
+        return
+
+    if status == "ambiguous":
+        console.print(Panel(f"[yellow]找到多个相关商机，请提供更精确的名称或直接使用 ID：[/yellow]", style="yellow"))
+        for cand in candidates:
+            cid = cand.get('id', '无ID')
+            console.print(f"- [bold cyan]{cid}[/bold cyan] : {cand['name']} ([dim]{cand.get('source', '')}[/dim])")
+        return
+
+    # status == "found_exact" or "found_by_context" (context unlikely for delete unless explicit)
     if target:
         pname = target.get("project_opportunity", {}).get("project_name")
         console.print(Panel(f"[red]即将删除：{pname}[/red]", style="red"))
