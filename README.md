@@ -1,6 +1,28 @@
-# LinkSell - 智能销售助手 (v3.1 工业级版本)
+# LinkSell - AI 销售商机助手
 
-LinkSell 是一款专为销售人员打造的高效数据采集、分析与商机管理工具。它通过 **“语音输入 + AI 结构化 + 自动化建档”** 的闭环逻辑，将凌乱的沟通内容转化为极具商业价值的数字化资产。
+LinkSell 是一个**本地优先 (Local-First)** 的智能销售管理工具。它不像传统的 CRM 那样只是个填表工具，而是一个能听懂人话、能帮你分析商机、能自动整理笔记的 **"AI 销售秘书"**。
+
+## 🔥 V3.2 重磅更新 (New Features)
+
+- **⚡️ 极速启动 (Async Loading)**: 采用后台异步加载技术，向量引擎在后台静默就绪，应用启动 **秒开**，告别卡顿。
+- **🧠 深度提取 (Deep Extraction)**: AI 现在能自动从笔记中提取 **待办事项 (Action Items)**、**客户需求 (Requirements)** 和 **客户态度 (Sentiment)**。
+- **🔄 智能合并与审计 (Smart Merge & Audit)**: 更新商机时，AI 会智能追加新信息而非简单覆盖，并生成 **变更审计报告**，告诉你具体的改动点（如：预算 50万 ➝ 60万）。
+- **📝 笔记自动润色 (Auto-Polish)**: 所有的语音/文字笔记在进入系统前，都会经过大模型自动润色，去除口语废话，生成专业小记。
+- **🎨 详情页升级**: 重新设计的商机详情排版，关键指标一目了然，Markdown 渲染更美观。
+
+## 🚀 核心功能
+1. **🗣️ 语音/自然语言录入**: 
+   - 就像发微信语音一样简单。
+   - "刚刚跟王总聊完，他们打算下个月上系统，预算50万。" -> 系统自动提取字段。
+2. **📂 自动归档与合并**: 
+   - 自动判断是新商机还是老商机。
+   - 自动将新笔记追加到老商机的历史记录中。
+3. **🔍 语义搜索**: 
+   - 甚至不记得项目名也没关系，搜 "上次那个预算50万的单子"，也能找到。
+   - 采用 ChromaDB 本地向量库，精准命中。
+4. **📊 结构化数据管理**:
+   - 自动提取：项目名称、客户信息、预算、阶段、时间节点、竞争对手、待办事项等。
+   - 本地 JSON 存储，数据完全掌握在你手里。
 
 ---
 
@@ -21,9 +43,11 @@ LinkSell 严格遵循 **MVC 架构设计**，确保了代码的可维护性与�
 
 - **Model (数据层)**：存储于 `data/opportunities/` 下的独立 JSON 文件，及 `data/vector_db/` 中的向量索引。
 - **View (视图层)**：
-    - **CLI (`interface.py`)**：基于 Rich 库的交互式终端，支持上下文状态管理。
-    - **GUI (`app.py`)**：基于 Streamlit 的响应式 Web 界面。
-- **Controller (业务逻辑层)**：核心控制器 `controller.py`，封装了所有的 AI 调度、数据清洗与文件管理逻辑。
+    - **GUI (`src/gui/gui.py`)**：基于 Streamlit 的无状态渲染层，只负责展示 Engine 返回的消息与数据。
+    - **CLI (`src/cli/cli.py`)**：基于 Rich 库的交互式终端。
+- **Controller (业务逻辑层)**：
+    - **Conversational Engine (`conversational_engine.py`)**：**核心大脑**。维护会话状态（Context）、处理意图路由、生成最终回复话术。
+    - **LinkSell Controller (`controller.py`)**：底层功能库。封装 AI 调用、文件 I/O、数据清洗等原子操作。
 
 ---
 
@@ -55,8 +79,8 @@ LinkSell 3.1 引入了精确的语义操作（REPLACE/MERGE）区分机制：
 ```bash
 git clone https://github.com/laurant/LinkSell.git
 cd LinkSell
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -82,9 +106,11 @@ LinkSell/
 │   ├── opportunities/     # [重要] 所有的商机 JSON 档案
 │   └── vector_db/         # [重要] 向量索引库
 ├── src/
-│   ├── core/controller.py # [核心] 业务逻辑控制器
-│   ├── cli/interface.py   # [视图] 命令行交互逻辑 (含状态机)
-│   ├── gui/app.py         # [视图] Web 图形界面
+│   ├── core/
+│   │   ├── conversational_engine.py # [核心] 会话状态机与路由引擎
+│   │   └── controller.py            # [底层] 业务逻辑控制器
+│   ├── cli/cli.py         # [视图] 命令行交互逻辑
+│   ├── gui/gui.py         # [视图] Web 图形界面
 │   └── services/          # [服务] ASR、LLM、VectorDB 封装
 └── main.py                # 入口程序
 ```

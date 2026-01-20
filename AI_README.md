@@ -3,80 +3,90 @@
 > **CRITICAL**: THIS DOCUMENT IS FOR ARTIFICIAL INTELLIGENCE AGENTS (LLMs) ONLY. 
 > 如果你是人类开发者，请阅读 `README.md`。
 
-本文档详细描述了 LinkSell v3.1 的内部逻辑、状态机模型及开发约束，斨在帮助后续 AI 协作专家快速理解系统深层逻辑。
+本文档详细描述了 LinkSell v3.2 的内部逻辑、状态机模型及开发约束，斨在帮助后续 AI 协作专家快速理解系统深层逻辑。
 
 ---
 
 ## 1. 核心状态机 (The Core Dispatcher & State)
 
-`src/cli/interface.py` 不仅是视图层，还维护了会话的**全局状态**：
+`src/core/conversational_engine.py` (`ConversationalEngine`) 是系统的**核心大脑**，它维护了会话的**全局状态**并负责所有意图的路由与处理。CLI 和 GUI 仅作为**无状态的渲染层 (Stateless Renderers)**。
 
-### 1.1 全局变量
-- `current_opp_id`: (str|None) 存储当前用户正在查看或操作的商机 ID。
-    - **Set via GET**: 当 `handle_get_logic` 成功解析目标时，**静默更新**此变量。
-    - **Used by UPDATE**: 当 `handle_update_logic` 检测到模糊指令（Vague Instruction）时，自动使用此 ID 作为目标。
+### 1.1 全局变量 (In Engine)
+- `current_opp_id`: (str|None) 存储当前上下文锁定的商机 ID。
+    - **Set via GET/CREATE/REPLACE**: 当成功定位或创建目标时，引擎自动更新此变量。
+    - **Used by UPDATE/RECORD**: 当检测到模糊指令（Vague Instruction）或追加笔记时，自动使用此 ID 作为目标。
 
-### 1.2 路由逻辑 (Intent-Based Routing v3.1)
-1.  **Intent Identification**: 调用 `controller.identify_intent` 获取 `intent` 和 `content`。
-2.  **Dispatching**:
-    - **RECORD**: 路由至 `handle_record` → 调用 `controller.add_to_note_buffer`。
-    - **CREATE**: 路由至 `handle_create` → 调用 `controller.process_commit_request` (触发 Architect 引擎)。
-    - **GET**: 路由至 `handle_get` → 更新 `current_opp_id` → 静默展示。
-    - **REPLACE**: 路由至 `handle_replace` → 且级精准修改（修改字段值）。
-    - **MERGE**: 路由至 `handle_merge` → 将笔记追加到 record_logs。
-    - **LIST/DELETE**: 标准路由。
+### 1.2 路由逻辑 (Intent-Based Routing v3.2)
+1.  **Unified Entry**: 所有用户输入通过 `engine.handle_user_input(text)` 进入。
+2.  **Intent Identification**: 调用 `controller.identify_intent` 获取 `intent` 和 `content`。
+3.  **Dispatching**:
+    - **RECORD**: `handle_record` → `controller.add_to_note_buffer` (自动 polish) → 返回状态。
+    - **CREATE**: `handle_create` → `controller.process_commit_request` (自动生成首条小记) → 自动保存 → 返回结果。
+    - **GET**: `handle_get` → 更新 `current_opp_id` → 返回 `type: detail` 供 UI 渲染。
+    - **REPLACE**: `handle_replace` → `controller.replace` → 自动保存 → 返回更新报告。
+    - **SAVE/MERGE**: `handle_save` → `controller.merge` → `calculate_changes` (Diff) → 自动保存 → 返回变更报告。
 
 ---
 
 ## 2. 销售架构师流程 (The Architect Pipeline)
 
-### 2.1 笔记暂存 (RECORDing)
-- 用户的原始输入被视为“笔记”。
-- `controller` 维护一个 `note_buffer` 列表。
-- 每条笔记都会先经过 `polish_text` 润色后再入库。
+### 2.1 笔记处理 (RECORDing)
+- `controller.add_to_note_buffer`: 
+  - 第一步先调用 `llm_service.polish_text` (prompt: `polish_text.txt`) 进行润色。
+  - 将润色后的文本存入 buffer。
 
-### 2.2 提交与合并 (CREATing)
-- 当意图为 `CREATE` 时，触发 Commit 逻辑。
-- **Entity Lookup**: 优先搜索笔记中提及的项目名，或使用 `project_name_hint`。
-- **Merging**: 使用 `sales_architect.txt` 提示词。如果有 `original_json`，执行字段覆盖与 Log 追加；否则执行新建。
-- **Stateless Confirmation**: 生成 `staged_data`，用户必须通过物理按钮或序号确认后才正式入库。
+### 2.2 结构化提取 (Extraction)
+- **Prompt**: `config/prompts/sales_architect.txt`
+- **Fields**: 
+  - `action_items` (List[str]): 待办事项。
+  - `customer_requirements` (List[str]): 客户技术/产品需求。
+  - `sentiment` (str): 客户态度 + 理由。
+  - `current_log_entry`: 本次沟通摘要。
 
-
----
-
-## 3. 提示词与功能映射表 (Prompts Mapping)
-
-| 文件名 | 调用方法 (Controller) | 业务逻辑 |
-| :--- | :--- | :--- |
-| `classify_intent.txt` | `identify_intent` | 意图分流 + 内容提取。返回 JSON。 |
-| `extract_search_term.txt` | `extract_search_term` | **辅助工具**：用于 REPLACE 流程中判断用户是否指明了具体项目（Vague Check）。 |
-| `normalize_input.txt` | `normalize_input` | 填空题规范化 (处理 NULL、格式化金额/日期)。 |
-| `judge_save.txt` | `judge_user_affirmative` | 全局布尔逻辑判决。 |
-| `analyze_sales.txt` | `analyze` | 销售对话结构化提取。 |
-| `sales_architect.txt` | `architect_analyze` | 自然语言驱动的 JSON 字段级修改（用于 REPLACE 和 CREATE）。 |
-| `polish_text.txt` | `polish` | 录音转写文本去燥润色。 |
+### 2.3 智能合并 (Smart Merge)
+- **Logic**: `src/core/controller.py` -> `merge`
+- **Behavior**:
+  - Top-level fields (budget, stage, etc.): Overwrite if new value exists.
+  - List fields (action_items, requirements): Set-based Append (去重追加).
+  - History: Buffer content is appended to `record_logs` with timestamp.
 
 ---
 
-## 4. 开发红线 (Hard Rules for AI)
+## 3. 向量引擎 (Vector Engine v3.2)
 
-### 4.1 状态管理 (State Integrity)
-- **Silent GET**: `handle_get` **严禁**包含任何阻塞式交互（如 "按 E 编辑"），也不应打印 "已锁定 ID" 等调试信息。它只负责展示数据和更新变量。
-- **Global ID Sync**: 任何成功解析出唯一目标的操作（GET, REPLACE, CREATE-Associate），都应更新 `current_opp_id`。
+### 3.1 异步加载 (Async Loading)
+- **File**: `src/services/vector_service.py`
+- **Implementation**: Uses `threading.Thread` to load `SentenceTransformer` and `ChromaDB` in the background.
+- **Lazy Wait**: `_ensure_initialized()` uses `threading.Event.wait()` to block only if a query arrives before initialization completes.
 
-### 4.2 交互规范
-- **Real IDs**: 所有的列表展示、选择逻辑必须基于真实 ID（字符串/时间戳）。严禁引入临时的 `enumerate` 索引。
-- **Vague Check**: REPLACE 逻辑必须优先检查用户输入是否包含具体实体。只有在"未提取到实体"且"有全局 ID" 时，才自动关联。
-
-### 4.3 存储逻辑
-- **Atomic Rename**: 修改项目名称时，必须保证文件重命名与向量库更新的一致性（已在 `controller.replace` 实现）。
+### 3.2 元数据过滤 (Metadata Filtering)
+- **Storage**: Key fields (`sales_rep`, `project_name`, `stage`) are stored in ChromaDB `metadatas`.
+- **Search**: `search` method accepts `where_filter` dict for precise SQL-like filtering.
 
 ---
 
-## 5. 常见 Debug 路径
-- **"KeyError: 'id'"**: 检查列表展示逻辑是否使用了旧的 `_temp_id`。现在应直接使用 `id`。
-- **Context Lost**: 检查 `handle_get` 是否正确更新了 `current_opp_id`。
-- **Infinite Loop in Create**: 检查 `choice` 判断逻辑，确保 `N` (新建) 和 `ID` (关联) 都有明确的退出路径。
+## 4. UI 渲染规范 (Markdown Specs)
+
+### 4.1 详情页布局 (`_format_report`)
+- **Customer Info**: Multi-line block (Name / Company / Role / Contact).
+- **Project Metrics**: Separate lines for Budget and Timeline.
+- **Lists**: `customer_requirements` and `action_items` rendered as bullet points.
+- **History**: "Sales Notes" section showing the last 3 entries (descending order).
+
+### 4.2 换行处理
+- All lines in list/blocks must end with two spaces (`  `) to ensure proper Markdown line breaks.
+
+---
+
+## 5. 开发红线 (Hard Rules for AI)
+
+### 5.1 状态管理 (State Integrity)
+- **Engine Owns State**: 所有的状态变更（ID 锁定、草稿暂存）必须在 `ConversationalEngine` 中完成。
+- **Global ID Sync**: 任何成功解析出唯一目标的操作（GET, REPLACE, CREATE），都应更新 `engine.current_opp_id`。
+
+### 5.2 交互规范
+- **Render-Ready Responses**: Engine 返回的 `message` 字段应包含所有必要的提示信息。
+- **Diff Feedback**: 所有的 UPDATE/MERGE 操作必须返回 `Diff` (变更报告) 给用户。
 
 ---
 *End of Context.*

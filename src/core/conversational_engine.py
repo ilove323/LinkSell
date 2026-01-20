@@ -1,15 +1,15 @@
 """
-对话引擎 (Conversational Engine)
+对话引擎 (Conversational Engine) - 无状态纯响应版 (v3.2)
 
 职责：
 - 处理所有意图的业务逻辑 (GET/LIST/REPLACE/CREATE/DELETE/RECORD/SAVE/MERGE)
 - 返回结构化的结果给UI层 (CLI/GUI)
-- 管理对话流程和状态
+- 管理会话上下文 (仅 Context ID 和 笔记缓存)
 
-不负责：
-- 与用户的直接交互
-- 展示结果的格式化
-- UI组件的渲染
+核心原则:
+- **Stateless**: 不挂起任何操作，不反问用户，不等待回复。
+- **Search First**: GET/DELETE/REPLACE 操作前必须先检索。
+- **Unique Lock**: 只有当检索结果唯一时，才执行锁定或操作；否则列出清单供参考。
 """
 
 from src.core.controller import LinkSellController
@@ -17,653 +17,344 @@ from src.core.controller import LinkSellController
 
 class ConversationalEngine:
     """对话处理引擎"""
-    
+
     def __init__(self):
         self.controller = LinkSellController()
-        self.current_opp_id = None  # 当前上下文的商机ID
-        self.staged_data = None      # 待保存的暂存数据
-        self.pending_action = None   # 挂起的确认动作
-    
-    # ==================== GET 意图 ====================
-    def handle_get(self, content: str, context_id=None) -> dict:
-        """
-        处理GET意图：查看商机详细信息
-        
-        返回格式：
-        {
-            "status": "success" | "not_found" | "ambiguous",
-            "message": "提示信息",
-            "data": {...},  # 当status==success时存在
-            "candidates": [...],  # 当status==ambiguous时存在
-            "context_id": "设置的新上下文ID"
-        }
-        """
-        target, candidates, resolve_status = self.controller.resolve_target_interactive(
-            content, context_id or self.current_opp_id
-        )
-        
-        if resolve_status == "not_found":
-            search_term = self.controller.extract_search_term(content) or content
-            return {
-                "status": "not_found",
-                "message": f"未找到与 '{search_term}' 相关的商机。",
-                "data": None
-            }
-        
-        if resolve_status == "ambiguous":
-            return {
-                "status": "ambiguous",
-                "message": "找到多个相关商机，请提供更精确的名称或直接使用 ID",
-                "candidates": candidates,
-                "data": None
-            }
-        
-        # found_exact 或 found_by_context
-        if target:
-            self.current_opp_id = target.get("id")
-            auto_matched = resolve_status == "found_by_context"
-            
-            return {
-                "status": "success",
-                "message": f"已查看：{target.get('project_opportunity',{}).get('project_name')}",
-                "data": target,
-                "auto_matched": auto_matched,
-                "context_id": target.get("id")
-            }
-        
-        return {
-            "status": "error",
-            "message": "未知错误",
-            "data": None
-        }
-    
-    # ==================== LIST 意图 ====================
-    def handle_list(self, content: str) -> dict:
-        """
-        处理LIST意图：查看商机列表
-        
-        返回格式：
-        {
-            "status": "success" | "empty",
-            "message": "提示信息",
-            "results": [...],
-            "search_term": "搜索词"
-        }
-        """
-        result_pkg = self.controller.process_list_request(content)
-        results = result_pkg["results"]
-        
-        return {
-            "status": "success" if results else "empty",
-            "message": result_pkg["message"],
-            "results": results,
-            "search_term": result_pkg["search_term"]
-        }
-    
-    # ==================== CREATE 意图 ====================
-    def handle_create(self, project_name_hint: str = "", auto_save: bool = True) -> dict:
-        """
-        处理CREATE意图：正式录入/提交商机
-        
-        参数：
-        - project_name_hint: 项目名提示
-        - auto_save: 如果为True，则自动保存商机；否则需要用户确认
-        
-        返回格式：
-        {
-            "status": "linked" | "new" | "error",
-            "message": "提示信息",
-            "draft": {...},  # 生成的草稿数据
-            "linked_target": {...},  # 当status==linked时存在，关联的目标
-            "missing_fields": {...}  # 缺失的字段
-            "saved": True/False  # 是否已保存到磁盘
-        }
-        """
-        result_pkg = self.controller.process_commit_request(project_name_hint)
-        
-        if result_pkg["status"] == "error":
-            return {
-                "status": "error",
-                "message": result_pkg.get("message", "处理失败"),
-                "draft": None,
-                "saved": False
-            }
-        
-        draft = result_pkg["draft"]
-        status = result_pkg["status"]
-        
-        # 只处理新建商机
-        self.current_opp_id = draft.get("id")
-        self.staged_data = draft
-        missing_fields = self.controller.get_missing_fields(draft)
-        self.controller.clear_note_buffer()
-        saved = False
-        save_message = ""
-        if auto_save:
-            success = self.controller.overwrite_opportunity(draft)
-            if success:
-                saved = True
-                proj_name = draft.get("project_opportunity", {}).get("project_name", "商机")
-                save_message = f"\n✅ 已自动保存至 {proj_name}"
-        return {
-            "status": status,  # 只会是"new"
-            "message": self._generate_create_message(status, draft) + save_message,
-            "draft": draft,
-            "linked_target": None,
-            "missing_fields": missing_fields,
-            "saved": saved
-        }
-    
-    def _generate_create_message(self, status: str, draft: dict) -> str:
-        """生成CREATE操作的提示信息"""
-        proj_name = draft.get("project_opportunity", {}).get("project_name", "未命名项目")
-        if status == "linked":
-            return f"✅ 已成功关联并更新现有项目: {proj_name}"
+        self.current_opp_id = None  # 唯一的全局状态：当前锁定的商机ID
+
+    # ==================== 辅助方法：格式化输出 ====================
+
+    def _format_report(self, data: dict) -> str:
+        """生成商机详情的文本报告 (Markdown格式)"""
+        if not data:
+            return "暂无数据"
+
+        opp = data.get("project_opportunity", {})
+        cust = data.get("customer_info", {})
+
+        # 基础信息
+        p_name = opp.get("project_name", data.get("project_name", "未命名项目"))
+        stage_code = str(opp.get("opportunity_stage", ""))
+        stage_name = self.controller.stage_map.get(stage_code, "未知阶段")
+        is_new = "✨ 新项目" if opp.get("is_new_project") else "🔄 既有项目"
+
+        lines = []
+        lines.append(f"### {p_name} ({stage_name})")
+        lines.append(f"- **ID**: `{data.get('id')}`")
+        lines.append(f"- **属性**: {is_new}")
+        lines.append(f"- **负责销售**: {data.get('recorder', '未指定')}")
+        lines.append("")
+
+        # 客户信息 (多行展示)
+        lines.append("#### 👤 客户档案")
+        if cust:
+            lines.append(f"- **客户姓名**: {cust.get('name', 'N/A')}  ")
+            lines.append(f"- **企业名称**: {cust.get('company', 'N/A')}  ")
+            lines.append(f"- **职位角色**: {cust.get('role', 'N/A')}  ")
+            lines.append(f"- **联系方式**: {cust.get('contact', 'N/A')}  ")
         else:
-            return f"✨ 已识别并生成新商机草稿：{proj_name}"
-    
-    # ==================== REPLACE 意图 ====================
-    def handle_replace(self, content: str, context_id=None) -> dict:
-        """
-        处理REPLACE意图：修改商机信息
+            lines.append("*(暂无客户信息)*")
+        lines.append("")
+
+        # 核心指标
+        lines.append("#### 📊 项目详情")
+        lines.append(f"💰 **预算金额**: {opp.get('budget', '未知')}  ")
+        lines.append(f"⏱️ **时间节点**: {opp.get('timeline', '未知')}  ")
         
-        返回格式：
-        {
-            "status": "success" | "not_found" | "ambiguous",
-            "message": "提示信息",
-            "data": {...},  # 修改后的数据（暂存）
-            "candidates": [...],  # 当ambiguous时存在
-            "auto_matched": bool,  # 是否自动匹配
-            "missing_fields": {...}
-        }
-        """
-        target, candidates, resolve_status = self.controller.resolve_target_interactive(
-            content, context_id or self.current_opp_id
-        )
-        
-        if resolve_status == "not_found":
-            search_term = self.controller.extract_search_term(content) or content
-            return {
-                "status": "not_found",
-                "message": f"未找到与 '{search_term}' 相关的商机。",
-                "data": None
-            }
-        
-        if resolve_status == "ambiguous":
-            return {
-                "status": "ambiguous",
-                "message": "找到多个相关商机，请提供更精确的名称",
-                "candidates": candidates,
-                "data": None
-            }
-        
-        # 执行替换（修改字段）
-        updated_result = self.controller.replace(target, content)
-        
-        # 直接保存（不需要确认）
-        success = self.controller.overwrite_opportunity(updated_result)
-        
-        if success:
-            self.current_opp_id = updated_result.get("id")
-            return {
-                "status": "success",
-                "message": "✅ 已修改并保存",
-                "data": updated_result,
-                "auto_matched": resolve_status == "found_by_context",
-                "context_id": updated_result.get("id")
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "修改失败",
-                "data": None
-            }
-    
-    # ==================== DELETE 意图 ====================
-    def handle_delete(self, content: str, context_id=None) -> dict:
-        """
-        处理DELETE意图：删除商机
-        
-        返回格式：
-        {
-            "status": "confirm_needed" | "not_found" | "ambiguous" | "deleted",
-            "message": "提示信息",
-            "data": {...},  # 待删除的数据
-            "candidates": [...],  # 当ambiguous时
-            "warning": "删除警告"  # 当confirm_needed时
-        }
-        """
-        target, candidates, resolve_status = self.controller.resolve_target_interactive(
-            content, context_id or self.current_opp_id
-        )
-        
-        if resolve_status == "not_found":
-            search_term = self.controller.extract_search_term(content) or content
-            return {
-                "status": "not_found",
-                "message": f"未找到与 '{search_term}' 相关的商机。",
-                "data": None
-            }
-        
-        if resolve_status == "ambiguous":
-            return {
-                "status": "ambiguous",
-                "message": "找到多个相关商机，请提供更精确的名称",
-                "candidates": candidates,
-                "data": None
-            }
-        
-        if target:
-            warning = self.controller.generate_delete_warning(target)
-            self.pending_action = {
-                "type": "confirm_delete",
-                "target": target
-            }
+        # 客户态度 (新增)
+        sentiment = opp.get("sentiment")
+        if sentiment:
+            lines.append(f"😊 **客户态度**: {sentiment}  ")
+        lines.append("")
+
+        # 客户需求 (新增)
+        reqs = opp.get("customer_requirements", [])
+        if reqs:
+            lines.append("🛠️ **客户需求 (技术/产品)**:  ")
+            for r in reqs:
+                lines.append(f"  - {r}  ")
+            lines.append("")
+
+        # 列表项
+        if opp.get("key_points"):
+            lines.append("📌 **核心关键点**:  ")
+            for p in opp.get("key_points", []):
+                lines.append(f"  - {p}  ")
+            lines.append("")
+
+        if opp.get("action_items"):
+            lines.append("✅ **下步待办**:  ")
+            for a in opp.get("action_items", []):
+                lines.append(f"  - {a}  ")
+            lines.append("")
+
+        # 最近跟进 -> 销售小记
+        logs = data.get("record_logs", [])
+        if logs:
+            lines.append("📝 **销售小记 (History Logs)**:")
+            # 按时间倒序排列
+            sorted_logs = sorted(logs, key=lambda x: x.get("time", ""), reverse=True)
             
-            return {
-                "status": "confirm_needed",
-                "message": "确认删除操作",
-                "data": target,
-                "warning": warning
-            }
-        
-        return {
-            "status": "error",
-            "message": "未知错误",
-            "data": None
-        }
-    
-    def confirm_delete(self) -> dict:
-        """确认删除挂起的商机"""
-        if not self.pending_action or self.pending_action.get("type") != "confirm_delete":
-            return {
-                "status": "error",
-                "message": "没有待删除的商机"
-            }
-        
-        target = self.pending_action.get("target")
-        record_id = target.get("id")
-        proj_name = target.get("project_opportunity", {}).get("project_name")
-        
-        success = self.controller.delete_opportunity(record_id)
-        
-        self.pending_action = None
-        self.current_opp_id = None
-        
-        return {
-            "status": "success" if success else "error",
-            "message": f"已删除商机：{proj_name}" if success else "删除失败"
-        }
-    
-    # ==================== RECORD 意图 ====================
-    def handle_record(self, content: str) -> dict:
-        """
-        处理RECORD意图：添加笔记到缓冲区
-        
-        返回格式：
-        {
-            "status": "success",
-            "message": "笔记已暂存",
-            "note_count": 数字,
-            "polished_content": "润色后的内容",
-            "has_context": bool,  # 是否有当前商机上下文
-            "current_opp_name": str  # 当前商机名称（如果有）
-        }
-        """
-        polished = self.controller.add_to_note_buffer(content)
-        count = len(self.controller.note_buffer)
-        
-        # 检查是否有当前商机上下文
-        has_context = False
-        current_opp_name = None
-        if self.current_opp_id:
-            current_opp = self.controller.get_opportunity_by_id(self.current_opp_id)
-            if current_opp:
-                has_context = True
-                current_opp_name = current_opp.get("project_opportunity", {}).get("project_name", "当前商机")
-        
-        return {
-            "status": "success",
-            "message": f"📝 笔记已暂存 ({count}条)",
-            "note_count": count,
-            "polished_content": polished,
-            "has_context": has_context,
-            "current_opp_name": current_opp_name
-        }
-    
-    def handle_save(self) -> dict:
-        """
-        处理SAVE意图：将笔记MERGE到当前商机的record_logs
-        
-        返回格式：
-        {
-            "status": "success" | "no_context" | "error",
-            "message": "提示信息",
-            "data": {...}  # 更新后的数据（当status==success时）
-        }
-        """
-        # 检查是否有当前商机上下文
-        if not self.current_opp_id:
-            return {
-                "status": "no_context",
-                "message": "❌ 未设定当前商机，无法保存。请先查看一个商机或使用'创建'新建。",
-                "data": None
-            }
-        
-        # 检查笔记缓冲区是否为空
-        if not self.controller.note_buffer:
-            return {
-                "status": "error",
-                "message": "❌ 笔记为空，没有内容可保存。",
-                "data": None
-            }
-        
-        # 获取当前商机
-        current_opp = self.controller.get_opportunity_by_id(self.current_opp_id)
-        if not current_opp:
-            return {
-                "status": "error",
-                "message": "❌ 当前商机不存在，请重新选择。",
-                "data": None
-            }
-        
-        # 将笔记缓冲区的内容合并
-        note_content = "\n".join(self.controller.note_buffer)
-        
-        # 调用MERGE逻辑将笔记追加到record_logs
-        merged_result = self.controller.merge(current_opp, note_content)
-        
-        # 保存到文件
-        success = self.controller.overwrite_opportunity(merged_result)
-        
-        if success:
-            # 清空笔记缓冲
-            self.controller.clear_note_buffer()
+            # 只显示最近 3 条，免得刷屏
+            for log in sorted_logs[:3]:
+                ts = log.get("time", "")[:16] # 只取到分钟
+                content = log.get("content", "")
+                lines.append(f"> **{ts}**: {content}  ")
             
-            opp_name = merged_result.get("project_opportunity", {}).get("project_name", "商机")
-            return {
-                "status": "success",
-                "message": f"✅ 已成功保存笔记至 {opp_name}",
-                "data": merged_result,
-                "type": "detail"
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "❌ 保存失败，请稍后重试。",
-                "data": None
-            }
-    
-    # ==================== MERGE 意图 ====================
-    def handle_merge(self) -> dict:
-        """
-        处理MERGE意图：将笔记MERGE到当前商机的record_logs
-        （MERGE与SAVE的区别：SAVE是保存到当前商机，MERGE可能用于其他场景）
-        
-        返回格式：
-        {
-            "status": "success" | "no_context" | "error",
-            "message": "提示信息",
-            "data": {...}  # 更新后的数据（当status==success时）
-        }
-        """
-        # 检查是否有当前商机上下文
-        if not self.current_opp_id:
-            return {
-                "status": "no_context",
-                "message": "❌ 未设定当前商机，无法保存。请先查看一个商机或使用'创建'新建。",
-                "data": None
-            }
-        
-        # 检查笔记缓冲区是否为空
-        if not self.controller.note_buffer:
-            return {
-                "status": "error",
-                "message": "❌ 笔记为空，没有内容可保存。",
-                "data": None
-            }
-        
-        # 获取当前商机
-        current_opp = self.controller.get_opportunity_by_id(self.current_opp_id)
-        if not current_opp:
-            return {
-                "status": "error",
-                "message": "❌ 当前商机不存在，请重新选择。",
-                "data": None
-            }
-        
-        # 将笔记缓冲区的内容合并
-        note_content = "\n".join(self.controller.note_buffer)
-        
-        # 调用MERGE逻辑将笔记追加到record_logs
-        merged_result = self.controller.merge(current_opp, note_content)
-        
-        # 保存到文件
-        success = self.controller.overwrite_opportunity(merged_result)
-        
-        if success:
-            # 清空笔记缓冲
-            self.controller.clear_note_buffer()
-            
-            opp_name = merged_result.get("project_opportunity", {}).get("project_name", "商机")
-            return {
-                "status": "success",
-                "message": f"✅ 已成功保存笔记至 {opp_name}",
-                "data": merged_result,
-                "type": "detail"
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "❌ 保存失败，请稍后重试。",
-                "data": None
-            }
-    
-    # ==================== 确认动作处理 ====================
-    def confirm_save(self, new_data=None) -> dict:
-        """
-        确认保存暂存的数据
-        
-        参数：
-        - new_data: 可选，新的数据（如果有编辑）
-        
-        返回格式：
-        {
-            "status": "success" | "error",
-            "message": "提示信息",
-            "record_id": "保存后的ID"
-        }
-        """
-        data_to_save = new_data or self.staged_data
-        
-        if not data_to_save:
-            return {
-                "status": "error",
-                "message": "没有待保存的数据"
-            }
-        
-        success = self.controller.overwrite_opportunity(data_to_save)
-        
-        if success:
-            record_id = data_to_save.get("id")
-            self.staged_data = None
-            self.pending_action = None
-            
-            return {
-                "status": "success",
-                "message": f"✅ 已保存，ID：{record_id}",
-                "record_id": record_id
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "保存失败"
-            }
-    
-    def discard_changes(self) -> dict:
-        """放弃暂存的修改"""
-        self.staged_data = None
-        self.pending_action = None
-        
-        return {
-            "status": "success",
-            "message": "已放弃修改"
-        }
-    
-    # ==================== 工具方法 ====================
-    def get_staged_data(self):
-        """获取暂存的数据"""
-        return self.staged_data
-    
-    def set_context(self, opp_id: str):
-        """设置当前上下文ID"""
-        self.current_opp_id = opp_id
-    
-    def get_context(self):
-        """获取当前上下文ID"""
-        return self.current_opp_id
-    
-    def resolve_ambiguity(self, selected_index: int) -> dict:
-        """
-        从多个候选中选择一个
-        
-        返回格式：
-        {
-            "status": "success" | "error",
-            "data": {...}  # 选定的商机
-        }
-        """
-        if not self.pending_action or self.pending_action.get("type") != "resolve_ambiguity":
-            return {
-                "status": "error",
-                "message": "没有待处理的歧义"
-            }
-        
-        candidates = self.pending_action.get("candidates", [])
-        if selected_index < 0 or selected_index >= len(candidates):
-            return {
-                "status": "error",
-                "message": "选择索引无效"
-            }
-        
-        selected = candidates[selected_index]
-        target = self.controller.get_opportunity_by_id(selected.get("id"))
-        
-        # 保存当前待处理的意图
-        pending_intent = self.pending_action.get("intent")
-        self.pending_action = None
-        
-        # 根据原始意图继续处理
-        if pending_intent == "GET":
-            self.current_opp_id = target.get("id")
-            return {
-                "status": "success",
-                "data": target,
-                "next_action": "display"
-            }
-        elif pending_intent == "REPLACE":
-            # 返回target，等待更新指令
-            return {
-                "status": "success",
-                "data": target,
-                "next_action": "wait_update_instruction"
-            }
-        elif pending_intent == "DELETE":
-            warning = self.controller.generate_delete_warning(target)
-            self.pending_action = {
-                "type": "confirm_delete",
-                "target": target
-            }
-            return {
-                "status": "success",
-                "data": target,
-                "warning": warning,
-                "next_action": "confirm_delete"
-            }
-        
-        return {
-            "status": "success",
-            "data": target
-        }
-    
-    # ==================== 语音处理 ====================
-    def handle_voice_input(self, audio_file: str) -> dict:
-        """
-        处理语音输入：转文字 → polish处理 → 返回处理后的文本
-        """
-        try:
-            # 1. 转语音为文字
-            text = self.controller.transcribe(audio_file)
-            if not text:
-                return {
-                    "status": "error",
-                    "message": "语音转换失败，无法识别内容"
-                }
-            
-            # 2. 用polish处理文字
-            polished = self.controller.polish(text)
-            
-            return {
-                "status": "success",
-                "text": polished,
-                "raw_text": text
-            }
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"语音处理失败：{str(e)}"
-            }
-    
+            if len(sorted_logs) > 3:
+                lines.append(f"> *(...还有 {len(sorted_logs)-3} 条历史记录)*  ")
+
+        return "\n".join(lines)
+
+    def _format_list(self, results: list) -> str:
+        """生成商机列表的文本报告"""
+        if not results:
+            return "暂无相关商机记录。"
+
+        lines = []
+        lines.append(f"🔍 找到 {len(results)} 条相关商机：")
+        lines.append("")
+
+        for opp in results:
+            if "project_opportunity" in opp:
+                pid = opp.get("id", "?")
+                p_name = opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知项目"))
+                stage = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
+                stage_name = self.controller.stage_map.get(stage, stage)
+                sales = opp.get("sales_rep", "-")
+                lines.append(f"- `ID: {pid}` | **{p_name}** | {stage_name} | {sales}")
+            else:
+                pid = opp.get("id", "?")
+                p_name = opp.get("name", "未知")
+                sales = opp.get("sales_rep", "未知")
+                lines.append(f"- `ID: {pid}` | **{p_name}** | 销售: {sales}")
+
+        lines.append("\n(提示：请输入精准 ID 或项目全名以锁定目标)")
+        return "\n".join(lines)
+
     # ==================== 统一对话入口 ====================
+
     def handle_user_input(self, user_input: str) -> dict:
-        """
-        统一对话入口：负责意图识别和分支处理，返回结构化结果
-        """
+        """统一对话入口"""
         intent_result = self.controller.identify_intent(user_input)
         intent = intent_result.get("intent", "UNKNOWN")
         content = intent_result.get("content", user_input)
-        
+
         if intent == "GET":
-            result = self.handle_get(content)
-            result["type"] = "detail"
-            return result
+            return self.handle_get(content)
         elif intent == "LIST":
-            result = self.handle_list(content)
-            result["type"] = "list"
-            return result
+            return self.handle_list(content)
         elif intent == "CREATE":
-            result = self.handle_create(content)
-            result["type"] = "create"
-            return result
+            return self.handle_create(content)
         elif intent == "REPLACE":
-            result = self.handle_replace(content)
-            result["type"] = "update"
-            return result
+            return self.handle_replace(content)
         elif intent == "DELETE":
-            result = self.handle_delete(content)
-            result["type"] = "delete"
-            return result
+            return self.handle_delete(content)
         elif intent == "RECORD":
-            result = self.handle_record(content)
-            result["type"] = "record"
-            return result
-        elif intent == "SAVE":
-            result = self.handle_save()
-            if result.get("type") == "detail":
-                result["type"] = "detail"
-            else:
-                result["type"] = "record"  # 保持在笔记界面
-            return result
-        elif intent == "MERGE":
-            result = self.handle_merge()
-            if result.get("type") == "detail":
-                result["type"] = "detail"
-            else:
-                result["type"] = "record"  # 保持在笔记界面
-            return result
+            return self.handle_record(content)
+        elif intent in ["SAVE", "MERGE"]:
+            return self.handle_save()
         else:
             return {
                 "type": "error",
                 "status": "unknown_intent",
-                "message": "未能识别您的意图，请重新输入。"
+                "message": "未能识别您的意图，请尝试更明确的表达方式。"
             }
+
+    # ==================== 业务处理器 ====================
+
+    def _search_and_resolve(self, content: str, use_context: bool = True):
+        """搜索逻辑：返回候选列表"""
+        search_term = self.controller.extract_search_term(content)
+
+        # 如果是模糊指令且有上下文，优先使用上下文
+        if (not search_term or search_term == "CURRENT") and self.current_opp_id and use_context:
+            target = self.controller.get_opportunity_by_id(self.current_opp_id)
+            if target:
+                return [target]
+
+        # 否则执行搜索
+        final_term = search_term if search_term else content
+        return self.controller.find_potential_matches(final_term)
+
+    def handle_get(self, content: str) -> dict:
+        """处理查看详情意图"""
+        candidates = self._search_and_resolve(content)
+
+        if not candidates:
+            return {"type": "error", "message": f"找不到与 '{content}' 相关的商机。"}
+
+        if len(candidates) == 1:
+            full_target = self.controller.get_opportunity_by_id(candidates[0].get("id"))
+            if full_target:
+                self.current_opp_id = full_target.get("id")
+                return {
+                    "type": "detail",
+                    "message": f"已定位商机：{full_target.get('project_opportunity',{}).get('project_name')}",
+                    "report_text": self._format_report(full_target)
+                }
+
+        return {
+            "type": "list",
+            "message": "找到多个匹配结果，请提供更精准的名称或直接使用 ID：",
+            "report_text": self._format_list(candidates)
+        }
+
+    def handle_list(self, content: str) -> dict:
+        """处理列表查询意图"""
+        result_pkg = self.controller.process_list_request(content)
+        results = result_pkg["results"]
+        return {
+            "type": "list",
+            "message": result_pkg["message"],
+            "report_text": self._format_list(results)
+        }
+
+    def handle_replace(self, content: str) -> dict:
+        """处理修改意图"""
+        # 1. 优先检查当前锁定上下文
+        target = None
+        if self.current_opp_id:
+            target = self.controller.get_opportunity_by_id(self.current_opp_id)
+        
+        # 2. 如果没有锁定，才尝试去搜索
+        if not target:
+            candidates = self._search_and_resolve(content, use_context=False)
+            if not candidates:
+                return {"type": "error", "message": "找不到要修改的目标，请先查询并锁定一个商机，或在指令中包含准确的项目名称。"}
+            if len(candidates) > 1:
+                return {
+                    "type": "list",
+                    "message": "匹配到多个目标，请指定唯一 ID 进行修改：",
+                    "report_text": self._format_list(candidates)
+                }
+            target = self.controller.get_opportunity_by_id(candidates[0].get("id"))
+
+        if target:
+            # 3. 执行修改
+            updated = self.controller.replace(target, content)
+            
+            # 计算变更差异 (新增)
+            changes = self.controller.calculate_changes(target, updated)
+            change_msg = ""
+            if changes:
+                change_msg = "\n\n**🔄 本次更新内容：**\n" + "\n".join(changes)
+            
+            if self.controller.overwrite_opportunity(updated):
+                self.current_opp_id = updated.get("id")
+                return {
+                    "type": "update",
+                    "message": f"✅ 修改已保存。{change_msg}",
+                    "report_text": self._format_report(updated)
+                }
+        return {"type": "error", "message": "修改保存失败。"}
+
+    def handle_delete(self, content: str) -> dict:
+        """处理删除意图"""
+        candidates = self._search_and_resolve(content)
+
+        if not candidates:
+            return {"type": "error", "message": "找不到要删除的目标。"}
+
+        if len(candidates) > 1:
+            return {
+                "type": "list",
+                "message": "匹配到多个目标，为防止误删，请使用精准 ID 进行删除：",
+                "report_text": self._format_list(candidates)
+            }
+
+        real_id = candidates[0].get("id")
+        p_name = candidates[0].get("name") or candidates[0].get("project_opportunity", {}).get("project_name")
+
+        if self.controller.delete_opportunity(real_id):
+            if self.current_opp_id == real_id:
+                self.current_opp_id = None
+            return {"type": "delete", "message": f"🗑️ 已成功删除商机：{p_name}"}
+
+        return {"type": "error", "message": "删除失败。"}
+
+    def handle_create(self, content: str) -> dict:
+        """处理创建意图"""
+        result_pkg = self.controller.process_commit_request()
+        if result_pkg["status"] == "error":
+            return {"type": "error", "message": result_pkg.get("message", "提交失败")}
+
+        draft = result_pkg["draft"]
+        
+        # 核心修复：检查保存是否成功
+        if self.controller.overwrite_opportunity(draft):
+            self.current_opp_id = draft.get("id")
+            self.controller.clear_note_buffer() # 只有成功了才清空
+            
+            missing = self.controller.get_missing_fields(draft)
+            missing_msg = f"\n⚠️ 提醒：关键字段 ({', '.join([v[0] for v in missing.values()])}) 缺失。" if missing else ""
+
+            return {
+                "type": "create",
+                "message": f"✨ 新建并保存成功：{draft.get('project_name')}{missing_msg}",
+                "report_text": self._format_report(draft)
+            }
+        else:
+            return {
+                "type": "error", 
+                "message": "❌ 保存失败：未识别到有效的项目名称。\nAI 没能从笔记里提取出项目名，请再说一句明确的话，比如：“项目名称是XX改造工程”。"
+            }
+
+    def handle_record(self, content: str) -> dict:
+        """处理笔记记录意图"""
+        polished = self.controller.add_to_note_buffer(content)
+        count = len(self.controller.note_buffer)
+
+        ctx_msg = ""
+        if self.current_opp_id:
+            curr = self.controller.get_opportunity_by_id(self.current_opp_id)
+            if curr:
+                name = curr.get("project_opportunity", {}).get("project_name", "当前商机")
+                ctx_msg = f"\n(当前上下文: {name})"
+
+        return {
+            "type": "record",
+            "message": f"📝 笔记已暂存 ({count}条){ctx_msg}\n> {polished}"
+        }
+
+    def handle_save(self) -> dict:
+        """处理保存意图 (将缓存笔记存入上下文商机)"""
+        if not self.current_opp_id:
+            return {"type": "error", "message": "❌ 未选定商机。请先搜索并查看一个商机，再说'保存'。"}
+        if not self.controller.note_buffer:
+            return {"type": "error", "message": "❌ 没笔记可存。"}
+
+        target = self.controller.get_opportunity_by_id(self.current_opp_id)
+        if not target:
+            return {"type": "error", "message": "锁定项目失效。"}
+
+        merged = self.controller.merge(target, "\n".join(self.controller.note_buffer))
+        
+        # 计算变更差异
+        changes = self.controller.calculate_changes(target, merged)
+        
+        if self.controller.overwrite_opportunity(merged):
+            self.controller.clear_note_buffer()
+            
+            # 构建变更通知
+            change_msg = ""
+            if changes:
+                change_msg = "\n\n**🔄 本次自动更新字段：**\n" + "\n".join(changes)
+            
+            return {
+                "type": "detail",
+                "message": f"✅ 笔记已追加至：{merged.get('project_opportunity',{}).get('project_name')}{change_msg}",
+                "report_text": self._format_report(merged)
+            }
+        return {"type": "error", "message": "保存失败。"}
+
+    def handle_voice_input(self, audio_file: str) -> dict:
+        """处理语音输入转换"""
+        try:
+            text = self.controller.transcribe(audio_file)
+            if not text:
+                return {"status": "error", "message": "未识别到有效语音。"}
+            polished = self.controller.polish(text)
+            return {"status": "success", "text": polished}
+        except Exception as e:
+            return {"status": "error", "message": f"语音错误: {e}"}

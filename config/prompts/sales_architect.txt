@@ -32,7 +32,19 @@
     "current_log_entry": "本次沟通精华...",
     "opportunity_stage": 1,  // 必须放在顶层，值为 1-4 的数字
     "customer_info": {...},
-    "project_opportunity": {...},
+    "project_opportunity": {
+        "project_name": "Project Name (Same as above)",
+        "budget": "Budget Amount",
+        "timeline": "Timeframe",
+        "opportunity_stage": 1, // Integer 1-4
+        "procurement_process": "Bidding/Direct Purchase...",
+        "payment_terms": "Payment details...",
+        "competitors": ["Competitor A", "Competitor B"],
+        "technical_staff": ["Tech A", "Tech B"],
+        "customer_requirements": ["Req 1", "Req 2"], // <--- NEW: Product/Technical requirements
+        "action_items": ["Action 1", "Action 2 (Deadline)"], // <--- NEW: Extract explicit to-dos
+        "sentiment": "Positive - Reason (e.g., Liked our demo)" // <--- Attitude + Reason
+    },
     ...
 }
 

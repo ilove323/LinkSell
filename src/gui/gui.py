@@ -5,28 +5,26 @@ LinkSell GUI 主程序 (Streamlit)
 - 提供用户界面
 - 接收用户输入  
 - 调用对话引擎处理逻辑
-- 展示对话引擎返回的结果
+- 展示对话引擎返回的结果 (纯文本/Markdown 渲染)
 
 特点：
 - 纯UI层，不包含业务逻辑
-- 使用conversational_engine进行业务处理
+- 无状态渲染：仅展示 Engine 给出的 message 和 report_text
 """
 
 import streamlit as st
 import sys
 import time
 import json
-import copy
 import importlib
 from pathlib import Path
-import streamlit.components.v1 as components
 
 # Add project root to path
 root = Path(__file__).parent.parent.parent
 if str(root) not in sys.path:
     sys.path.append(str(root))
 
-# 强制重载核心模块（确保最新代码生效）
+# 强制重载核心模块（确保代码更新即时生效）
 import src.core.controller
 importlib.reload(src.core.controller)
 import src.core.conversational_engine
@@ -37,46 +35,9 @@ from src.core.conversational_engine import ConversationalEngine
 # ==================== Page Config ====================
 st.set_page_config(page_title="LinkSell 智能销售助手", page_icon="💼", layout="wide")
 
-# ==================== Header ====================
-logo_path = Path("assets/icon/comlan.png")
-col_logo, col_title = st.columns([1, 6])
-with col_logo:
-    if logo_path.exists():
-        st.image(str(logo_path), width=120)
-with col_title:
-    st.title("LinkSell 智能销售助手")
-
-# ==================== Styles ====================
-st.markdown("""
-<style>
-    .report-container {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #dcdcdc;
-        margin-bottom: 20px;
-    }
-    .stChatMessage {
-        padding: 10px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 # ==================== Init Session State ====================
-APP_VERSION = "3.1"
-
-if "ui_templates" not in st.session_state:
-    try:
-        with open("config/ui_templates.json", "r", encoding="utf-8") as f:
-            all_templates = json.load(f)
-            # 过滤掉_deprecated_开头的废弃键
-            st.session_state.ui_templates = {k: v for k, v in all_templates.items() if not k.startswith("_deprecated_")}
-    except:
-        st.session_state.ui_templates = {}
-
-if "engine" not in st.session_state or st.session_state.get("app_ver") != APP_VERSION:
+if "engine" not in st.session_state:
     st.session_state.engine = ConversationalEngine()
-    st.session_state.app_ver = APP_VERSION
 
 if "messages" not in st.session_state:
     st.session_state.messages = [{
@@ -84,473 +45,118 @@ if "messages" not in st.session_state:
         "content": "有什么需要帮忙的么？您可以查看、创建或修改商机。"
     }]
 
-if "pending_action" not in st.session_state:
-    st.session_state.pending_action = None
-
 # ==================== Helper Functions ====================
 
-def get_ui_text(key: str, default: str = "") -> str:
-    """获取UI话术"""
-    import random
-    texts = st.session_state.ui_templates.get(key, [])
-    if isinstance(texts, list):
-        return random.choice(texts) if texts else default
-    return texts if texts else default
-
-
 def add_ai_message(content: str):
-    """添加AI消息"""
+    """添加AI消息到历史"""
     st.session_state.messages.append({"role": "assistant", "content": content})
 
 
 def add_user_message(content: str):
-    """添加用户消息"""
+    """添加用户消息到历史"""
     st.session_state.messages.append({"role": "user", "content": content})
 
 
-def handle_voice_input(audio_data):
-    """直接处理语音输入：转文字 → 发送（不保存到 session_state，避免widget冲突）"""
-    if not audio_data:
-        return
-    
-    if "last_voice_hash" not in st.session_state:
-        st.session_state.last_voice_hash = None
-    
-    # 计算音频哈希值，避免重复处理同一音频
-    audio_hash = hash(audio_data.getvalue())
-    if st.session_state.last_voice_hash == audio_hash:
-        return  # 同一个音频已处理过，跳过
-    
-    # 保存音频文件
-    tmp_path = Path(f"data/tmp/voice_{int(time.time())}.wav")
-    tmp_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(tmp_path, "wb") as f:
-        f.write(audio_data.getbuffer())
-    
-    # 调用引擎处理语音
-    with st.spinner("🎙️ 正在处理语音..."):
-        try:
-            result = st.session_state.engine.handle_voice_input(str(tmp_path))
-            if result.get("status") == "success":
-                # 直接发送转换后的文字
-                voice_text = result.get("text", "")
-                st.session_state.last_voice_hash = audio_hash
-                if voice_text.strip():
-                    process_user_input(voice_text)
-                    st.rerun()
-        except Exception as e:
-            st.error(f"语音处理失败: {e}")
-
-
-def add_report_message(data: dict):
-    """添加报告消息（展示商机详情）"""
-    st.session_state.messages.append({"role": "assistant", "content": "report", "data": data})
-
-
-def add_list_message(results: list, search_term: str = ""):
-    """添加列表消息"""
-    st.session_state.messages.append({"role": "assistant", "content": "list", "results": results, "search_term": search_term})
-
-
-def display_report(data: dict):
-    """展示商机报告"""
-    if not data:
-        st.warning("无数据可展示")
-        return
-    
-    with st.container():
-        col_left, col_right = st.columns(2)
-        
-        # 左侧：销售代表信息
-        with col_left:
-            st.markdown("#### 👥 销售代表")
-            recorder = data.get("recorder", "未指定")
-            st.markdown(f"**{recorder}**")
-        
-        # 右侧：客户画像
-        with col_right:
-            st.markdown("#### 👤 客户信息")
-            cust = data.get("customer_info", {})
-            if cust:
-                st.markdown(f"- **名称**: {cust.get('name', 'N/A')}")
-                st.markdown(f"- **公司**: {cust.get('company', 'N/A')}")
-                st.markdown(f"- **职位**: {cust.get('role', 'N/A')}")
-                st.markdown(f"- **联系**: {cust.get('contact', 'N/A')}")
-            else:
-                st.caption("未提取到有效信息")
-        
-        st.divider()
-        
-        # 商机概览
-        st.markdown("#### 💰 商机概览")
-        opp = data.get("project_opportunity", {})
-        if opp:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                proj_name = opp.get("project_name", "未命名项目")
-                is_new = "✨ 新项目" if opp.get("is_new_project") else "🔄 既有项目"
-                st.markdown(f"**{proj_name}**\n{is_new}")
-            with col2:
-                stage_key = str(opp.get("opportunity_stage", ""))
-                stage_name = st.session_state.engine.controller.stage_map.get(stage_key, "未知阶段")
-                st.markdown(f"**阶段**\n:blue[{stage_name}]")
-            with col3:
-                st.markdown(f"**预算**\n:green[{opp.get('budget', '未知')}]")
-            st.markdown(f"**时间**: {opp.get('timeline', '未知')}")
-        else:
-            st.caption("暂未发现明确商机")
-        
-        st.divider()
-        st.markdown("#### 📌 关键点")
-        key_points = opp.get("key_points", []) if opp else []
-        if key_points:
-            for idx, point in enumerate(key_points, 1):
-                st.markdown(f"{idx}. {point}")
-        else:
-            st.caption("暂无关键点")
-        
-        st.markdown("#### ✅ 待办事项")
-        action_items = opp.get("action_items", []) if opp else []
-        if action_items:
-            for idx, item in enumerate(action_items, 1):
-                st.markdown(f"{idx}. {item}")
-        else:
-            st.caption("暂无待办事项")
-        
-        # 跟进记录
-        st.divider()
-        st.markdown("#### 📜 跟进记录")
-        record_logs = data.get("record_logs", [])
-        if record_logs:
-            recent_logs = sorted(record_logs, key=lambda x: x.get("time", ""), reverse=True)[:3]
-            for log in recent_logs:
-                log_time = log.get("time", "未知时间")
-                recorder = log.get("recorder", "未知")
-                content = log.get("content", "")
-                with st.expander(f"📅 {log_time} @{recorder}"):
-                    st.write(content)
-        else:
-            st.caption("暂无跟进记录")
-
-
-def display_candidates(candidates: list) -> int:
-    """显示候选商机，返回选中的索引"""
-    st.markdown("#### 找到多个相关商机，请选择：")
-    
-    selected_idx = None
-    cols = st.columns(len(candidates))
-    
-    for idx, cand in enumerate(candidates):
-        with cols[idx]:
-            if st.button(f"[{cand.get('id', '?')}]\n{cand.get('name', '未命名')}", key=f"cand_{idx}"):
-                selected_idx = idx
-    
-    return selected_idx
+def display_report(report_text: str):
+    """渲染商机详情报告"""
+    if report_text:
+        with st.expander("📄 详情报告", expanded=True):
+            st.markdown(report_text)
 
 
 def process_user_input(user_input: str):
-    """分步处理用户输入，实时显示进度"""
+    """处理用户输入的主流程"""
     if not user_input.strip():
         return
     
-    # 第一步：立即显示用户消息
+    # 1. 立即展示用户输入
     add_user_message(user_input)
+    with st.chat_message("user", avatar="👤"):
+        st.write(user_input)
     
-    # 显示进度指示
-    with st.spinner("🤔 思考中..."):
-        # 第二步：处理输入（调用 handle_user_input）
+    # 2. 调用大脑处理
+    with st.spinner("🤔 正在处理..."):
         result = st.session_state.engine.handle_user_input(user_input)
     
-    # 第三步：显示结果并保存到 session_state
-    _display_result(result)
+    # 3. 处理返回结果
+    # 核心文本消息
+    if result.get("message"):
+        add_ai_message(result["message"])
     
-    # 重新运行，刷新界面并保证所有消息持久化
+    # 自动匹配提醒
+    if result.get("auto_matched"):
+        add_ai_message("💡 (系统已根据上下文自动锁定当前商机)")
+
+    # 结构化报告
+    if result.get("report_text"):
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": "report", 
+            "report_text": result["report_text"]
+        })
+    
+    # 4. 刷新页面同步历史
     st.rerun()
 
 
-def _display_result(result: dict):
-    """根据结果类型显示相应的内容"""
-    result_type = result.get("type")
-    if result_type == "detail":
-        if result.get("auto_matched"):
-            add_ai_message("💡 未检测到明确对象，已自动使用当前上下文商机。")
-        add_ai_message(result.get("message", ""))
-        add_report_message(result.get("data"))
-    elif result_type == "list":
-        add_ai_message(f"📋 找到 {len(result.get('results', []))} 条商机")
-        add_list_message(result.get('results', []), result.get('search_term', ''))
-    elif result_type == "create":
-        _handle_create_result(result)
-    elif result_type == "update":
-        add_ai_message(f"✅ {result.get('message','')}")
-        add_report_message(result.get("data"))
-    elif result_type == "delete":
-        if result["status"] == "confirm_needed":
-            add_ai_message("🗑️ 删除确认")
-            add_ai_message(result["warning"])
-            add_report_message(result["data"])
-        elif result["status"] == "not_found":
-            add_ai_message(f"❌ {result['message']}")
-        elif result["status"] == "ambiguous":
-            add_ai_message(result["message"])
-            st.session_state.pending_action = {
-                "type": "resolve_ambiguity",
-                "intent": "DELETE",
-                "candidates": result["candidates"]
-            }
-        elif result["status"] == "success":
-            add_ai_message(result["message"])
-    elif result_type == "record":
-        # 检查是否有 polished_content（来自 handle_record）
-        if "polished_content" in result:
-            add_ai_message(f"📝 {result['message']}\n\n{result['polished_content']}")
-            if result.get("has_context"):
-                current_name = result.get("current_opp_name", "当前商机")
-                add_ai_message(f"您可以继续输入内容追加笔记，或说'保存'保存至{current_name}/'创建'进行提交新商机。")
-            else:
-                add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交新商机。")
-        else:
-            # 来自 handle_save 的失败情况，只显示消息
-            add_ai_message(result.get("message", "未知错误"))
-    elif result_type == "error":
-        add_ai_message(result.get("message", "未知错误"))
-    else:
-        add_ai_message("未能识别的响应类型")
-
-
-# ==================== 结果处理函数 ====================
-
-def _handle_get_result(result: dict):
-    """处理GET结果"""
-    if result["status"] == "success":
-        if result.get("auto_matched"):
-            add_ai_message("💡 未检测到明确对象，已自动使用当前上下文商机。")
-        
-        add_ai_message(result["message"])
-        add_report_message(result["data"])
+def handle_voice_input(audio_data):
+    """处理语音录入"""
+    if not audio_data: return
     
-    elif result["status"] == "not_found":
-        add_ai_message(f"❌ {result['message']}")
+    # 保存临时文件
+    tmp_path = Path(f"data/tmp/voice_{int(time.time())}.wav")
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp_path, "wb") as f:
+        f.write(audio_data.getbuffer())
     
-    elif result["status"] == "ambiguous":
-        add_ai_message(result["message"])
-        st.session_state.pending_action = {
-            "type": "resolve_ambiguity",
-            "intent": "GET",
-            "candidates": result["candidates"]
-        }
+    with st.spinner("🎙️ 正在识别语音..."):
+        try:
+            res = st.session_state.engine.handle_voice_input(str(tmp_path))
+            if res.get("status") == "success":
+                process_user_input(res.get("text", ""))
+        except Exception as e:
+            st.error(f"语音识别失败: {e}")
 
 
-def _handle_list_result(result: dict):
-    """处理LIST结果"""
-    if result["status"] == "empty":
-        add_ai_message(result["message"])
-    else:
-        add_ai_message(f"📋 找到 {len(result['results'])} 条商机")
-        results = result["results"]
-        if results:
-            list_data = []
-            for opp in results:
-                pid = str(opp.get("id", "未知"))
-                pname = opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知"))
-                stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
-                stage_name = st.session_state.engine.controller.stage_map.get(stage_code, stage_code)
-                sales = opp.get("sales_rep", "-")
-                list_data.append({"ID": pid, "项目名称": pname, "阶段": stage_name, "销售": sales})
-            st.dataframe(list_data, use_container_width=True)
+# ==================== Main UI Layout ====================
 
+# 1. 标题栏
+logo_path = Path("assets/icon/comlan.png")
+col_logo, col_title = st.columns([1, 6])
+with col_logo:
+    if logo_path.exists(): st.image(str(logo_path), width=100)
+with col_title:
+    st.title("LinkSell 智能销售助手")
 
-def _handle_create_result(result: dict):
-    """处理CREATE结果"""
-    if result["status"] in ["linked", "new"]:
-        add_ai_message(result["message"])
-        
-        if result.get("missing_fields"):
-            add_ai_message("⚠️ 以下字段信息不完整，可以继续修改：")
-            for field_key, (field_name, _) in result["missing_fields"].items():
-                add_ai_message(f"  - {field_name}")
-        
-        add_report_message(result["draft"])
-        
-        # 已自动保存，不需要确认按钮
-        if result.get("saved"):
-            add_ai_message("💾 已自动保存商机至数据库")
-    else:
-        add_ai_message(f"❌ {result['message']}")
+st.divider()
 
-
-def _handle_update_result(result: dict):
-    """处理UPDATE结果"""
-    if result["status"] == "success":
-        if result.get("auto_matched"):
-            add_ai_message("💡 未检测到明确对象，已自动使用当前上下文商机。")
-        
-        add_ai_message(f"✅ {result['message']}")
-        add_report_message(result["data"])
-    
-    elif result["status"] == "not_found":
-        add_ai_message(f"❌ {result['message']}")
-    
-    elif result["status"] == "ambiguous":
-        add_ai_message(result["message"])
-        st.session_state.pending_action = {
-            "type": "resolve_ambiguity",
-            "intent": "UPDATE",
-            "candidates": result["candidates"]
-        }
-
-
-def _handle_delete_result(result: dict):
-    """处理DELETE结果"""
-    if result["status"] == "confirm_needed":
-        add_ai_message("🗑️ 删除确认")
-        add_ai_message(result["warning"])
-        add_report_message(result["data"])
-        
-        st.session_state.pending_action = {
-            "type": "confirm_delete",
-            "target": result["data"]
-        }
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🚨 确定删除", key="delete_confirm"):
-                delete_result = st.session_state.engine.confirm_delete()
-                add_ai_message(delete_result["message"])
-                st.session_state.pending_action = None
-                st.rerun()
-        
-        with col2:
-            if st.button("❌ 取消", key="delete_cancel"):
-                st.session_state.engine.discard_changes()
-                add_ai_message("已取消删除")
-                st.session_state.pending_action = None
-                st.rerun()
-    
-    elif result["status"] == "not_found":
-        add_ai_message(f"❌ {result['message']}")
-    
-    elif result["status"] == "ambiguous":
-        add_ai_message(result["message"])
-        st.session_state.pending_action = {
-            "type": "resolve_ambiguity",
-            "intent": "DELETE",
-            "candidates": result["candidates"]
-        }
-
-
-def _handle_record_result(result: dict):
-    """处理RECORD结果"""
-    if result["status"] == "success":
-        add_ai_message(f"📝 {result['message']}\n\n{result['polished_content']}")
-        if result.get("has_context"):
-            current_name = result.get("current_opp_name", "当前商机")
-            add_ai_message(f"您可以继续输入内容追加笔记，或说'保存'保存至{current_name}/'创建'进行提交新商机。")
-        else:
-            add_ai_message("您可以继续输入内容追加笔记，或说'创建'进行提交新商机。")
-
-
-# ==================== Main Chat Interface ====================
-
-# 显示历史消息
+# 2. 聊天历史展示
 for message in st.session_state.messages:
-    if message["role"] == "assistant":
+    if message["role"] == "user":
+        with st.chat_message("user", avatar="👤"):
+            st.write(message["content"])
+    else:
         if message["content"] == "report":
-            # 展示报告
             with st.chat_message("assistant", avatar="📊"):
-                display_report(message.get("data"))
-        elif message["content"] == "list":
-            # 展示列表
-            with st.chat_message("assistant", avatar="📋"):
-                results = message.get("results", [])
-                if results:
-                    list_data = []
-                    for opp in results:
-                        pid = str(opp.get("id", "未知"))
-                        pname = opp.get("project_opportunity", {}).get("project_name", opp.get("project_name", "未知"))
-                        stage_code = str(opp.get("project_opportunity", {}).get("opportunity_stage", "-"))
-                        stage_name = st.session_state.engine.controller.stage_map.get(stage_code, stage_code)
-                        sales = opp.get("sales_rep", "-")
-                        list_data.append({"ID": pid, "项目名称": pname, "阶段": stage_name, "销售": sales})
-                    st.dataframe(list_data, use_container_width=True)
+                display_report(message.get("report_text"))
         else:
             with st.chat_message("assistant", avatar="🤖"):
                 st.write(message["content"])
-    else:
-        with st.chat_message("user", avatar="👤"):
-            st.write(message["content"])
 
-# 用户输入
-st.divider()
+# 3. 输入区域
+st.chat_input("请输入您的指令 (例如: 查看沈阳项目, 预算改为50万...)", key="chat_input", on_submit=lambda: process_user_input(st.session_state.chat_input))
 
-# 主输入框
-user_input = st.chat_input("请输入您的需求...", key="main_chat_input")
-if user_input:
-    process_user_input(user_input)
-
-# 工具栏：语音录制 + 文件上传
-col_mic, col_upload, col_spacer = st.columns([1, 1.2, 10])
-
+# 4. 辅助工具栏 (录音/上传)
+col_mic, col_upload, _ = st.columns([1, 1.2, 10])
 with col_mic:
-    voice_audio = st.audio_input("🎙️ 录音", label_visibility="collapsed", key="voice_input")
-    if voice_audio:
-        handle_voice_input(voice_audio)
+    voice_audio = st.audio_input("🎙️", label_visibility="collapsed", key="mic_btn")
+    if voice_audio: handle_voice_input(voice_audio)
 
 with col_upload:
-    # 文件上传
-    uploaded_file = st.file_uploader("📁 上传音频", type=["wav", "mp3", "m4a"], label_visibility="collapsed", key="audio_file_uploader")
-    
-    # 使用独立的flag来追踪是否已处理当前文件
-    if "last_audio_file_id" not in st.session_state:
-        st.session_state.last_audio_file_id = None
-    
+    uploaded_file = st.file_uploader("📁", type=["wav", "mp3"], label_visibility="collapsed")
     if uploaded_file:
-        # 计算文件ID来判断是否是新文件（不使用 modified_at，改用 name 和 size）
-        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-        
-        if st.session_state.last_audio_file_id != file_id:
-            # 保存上传的文件
-            tmp_path = Path(f"data/tmp/{uploaded_file.name}")
-            tmp_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            # 处理音频
-            with st.spinner("📁 正在处理上传的音频..."):
-                try:
-                    result = st.session_state.engine.handle_voice_input(str(tmp_path))
-                    if result.get("status") == "success":
-                        voice_text = result.get("text", "")
-                        st.session_state.last_audio_file_id = file_id
-                        
-                        if voice_text.strip():
-                            # 立即处理文本，就像用户直接输入一样
-                            process_user_input(voice_text)
-                        else:
-                            st.warning("音频处理成功但未识别到文字")
-                    else:
-                        st.error(f"处理失败: {result.get('message', '未知错误')}")
-                except Exception as e:
-                    st.error(f"处理失败: {e}")
-
-# 处理待处理的歧义或确认动作
-if st.session_state.pending_action:
-    action_type = st.session_state.pending_action.get("type")
-    
-    if action_type == "resolve_ambiguity":
-        st.divider()
-        candidates = st.session_state.pending_action.get("candidates", [])
-        selected_idx = display_candidates(candidates)
-        
-        if selected_idx is not None:
-            resolve_result = st.session_state.engine.resolve_ambiguity(selected_idx)
-            
-            if resolve_result.get("next_action") == "display":
-                add_ai_message("已选择商机")
-                add_report_message(resolve_result["data"])
-            elif resolve_result.get("next_action") == "confirm_delete":
-                add_ai_message(resolve_result["warning"])
-                add_report_message(resolve_result["data"])
-            
-            st.rerun()
+        # 简单避免重复处理
+        file_key = f"processed_{uploaded_file.name}_{uploaded_file.size}"
+        if file_key not in st.session_state:
+            handle_voice_input(uploaded_file)
+            st.session_state[file_key] = True

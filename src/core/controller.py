@@ -187,6 +187,71 @@ class LinkSellController:
         safe_name = re.sub(r'[\\/:*?"<>|]', '_', project_name)
         return self.data_dir / f"{safe_name}.json"
 
+    def calculate_changes(self, old_data: dict, new_data: dict) -> list:
+        """
+        计算新旧数据的差异，生成人类可读的变更报告。
+        """
+        changes = []
+        
+        # 1. 基础字段映射
+        field_labels = {
+            "budget": "预算金额",
+            "timeline": "时间节点",
+            "opportunity_stage": "商机阶段",
+            "sentiment": "客户态度",
+            "sales_rep": "销售代表",
+            "procurement_process": "采购流程",
+            "payment_terms": "付款方式",
+            "project_name": "项目名称"
+        }
+        
+        # 2. 对比 project_opportunity 内的字段
+        old_opp = old_data.get("project_opportunity", {})
+        new_opp = new_data.get("project_opportunity", {})
+        
+        for key, label in field_labels.items():
+            # 优先从 project_opportunity 取，取不到从顶层取
+            v_old = old_opp.get(key) or old_data.get(key)
+            v_new = new_opp.get(key) or new_data.get(key)
+            
+            # 转字符串比较，忽略 None 和 空字符串的差异
+            s_old = str(v_old) if v_old else ""
+            s_new = str(v_new) if v_new else ""
+            
+            if s_new and s_new != s_old:
+                # 忽略从 "None" 到 "未知" 这种无意义变更
+                if s_old in ["None", "未知", ""] and s_new in ["None", "未知", ""]:
+                    continue
+                changes.append(f"📝 **{label}**: {s_old or '(空)'} ➝ {s_new}")
+
+        # 3. 对比列表字段 (只报告新增的)
+        list_fields = {
+            "action_items": "待办",
+            "customer_requirements": "需求",
+            "key_points": "关键点"
+        }
+        
+        for key, label in list_fields.items():
+            l_old = set(old_opp.get(key, []))
+            l_new = set(new_opp.get(key, []))
+            added = l_new - l_old
+            if added:
+                for item in added:
+                    changes.append(f"➕ **新增{label}**: {item}")
+        
+        # 4. 对比客户信息
+        old_cust = old_data.get("customer_info", {})
+        new_cust = new_data.get("customer_info", {})
+        cust_fields = {"name": "客户姓名", "company": "客户公司", "contact": "联系方式"}
+        
+        for key, label in cust_fields.items():
+            v_old = old_cust.get(key)
+            v_new = new_cust.get(key)
+            if v_new and v_new != v_old:
+                 changes.append(f"👤 **{label}**: {v_old or '(空)'} ➝ {v_new}")
+
+        return changes
+
     def list_opportunities(self, filter_func=None):
         """
         获取符合条件的商机列表 (List 操作)
@@ -419,24 +484,21 @@ class LinkSellController:
                     if new_val and new_val != current_opp.get(field):
                         current_opp[field] = new_val
             
-            # 2.3 特殊处理：action_items 和 key_points 执行追加
-            if "action_items" in parsed_opp and parsed_opp["action_items"]:
-                if "action_items" not in current_opp:
-                    current_opp["action_items"] = []
-                # 去重后追加（避免重复）
-                existing_items = set(current_opp["action_items"])
-                for item in parsed_opp["action_items"]:
-                    if item not in existing_items:
-                        current_opp["action_items"].append(item)
+            # 2.3 特殊处理：列表字段 (追加模式)
+            list_fields = ["action_items", "key_points", "customer_requirements"]
             
-            if "key_points" in parsed_opp and parsed_opp["key_points"]:
-                if "key_points" not in current_opp:
-                    current_opp["key_points"] = []
-                # 去重后追加
-                existing_points = set(current_opp["key_points"])
-                for point in parsed_opp["key_points"]:
-                    if point not in existing_points:
-                        current_opp["key_points"].append(point)
+            for list_key in list_fields:
+                if list_key in parsed_opp and parsed_opp[list_key]:
+                    if list_key not in current_opp:
+                        current_opp[list_key] = []
+                    
+                    existing_items = set(current_opp[list_key])
+                    for item in parsed_opp[list_key]:
+                        # 简单去重
+                        if item not in existing_items:
+                            current_opp[list_key].append(item)
+            
+            # (Deleted old individual handling for action_items and key_points to avoid duplication)
         
         # 步骤3：添加 record_log 记录本次笔记
         if "record_logs" not in merged:
@@ -1012,6 +1074,21 @@ class LinkSellController:
         # 如果project_opportunity中没有opportunity_stage，从顶层复制
         if "opportunity_stage" not in result_json.get("project_opportunity", {}):
             result_json["project_opportunity"]["opportunity_stage"] = result_json.get("opportunity_stage")
+
+        # 4. [新增] 将初始笔记存入 record_logs
+        # 优先使用 AI 总结的 current_log_entry，如果没有则使用原始 buffer
+        log_content = result_json.get("current_log_entry")
+        if not log_content and self.note_buffer:
+            log_content = "\n".join(self.note_buffer)
+            
+        if log_content:
+            result_json["record_logs"] = [{
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "recorder": self.default_recorder,
+                "content": log_content
+            }]
+            # 清理掉 current_log_entry，避免数据冗余 (它已经进 logs 了)
+            result_json.pop("current_log_entry", None)
 
         return {
             "status": "new",
