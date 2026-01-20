@@ -26,6 +26,10 @@ def transcribe_audio(file_path: str, app_id: str, access_token: str, resource_id
         print(f"[red]音频读取失败：{e}[/red]")
         return None
 
+    # 初始化 Session，配置绕过系统代理
+    session = requests.Session()
+    session.trust_env = False  # 关键：绕过系统代理/VPN，防止 SSL EOF 错误
+
     # 1. 提交任务
     submit_url = "https://openspeech-direct.zijieapi.com/api/v3/auc/bigmodel/submit"
     task_id = str(uuid.uuid4())
@@ -55,7 +59,7 @@ def transcribe_audio(file_path: str, app_id: str, access_token: str, resource_id
     }
 
     try:
-        resp = requests.post(submit_url, headers=headers, json=payload, timeout=30)
+        resp = session.post(submit_url, headers=headers, json=payload, timeout=30)
         status_code = resp.headers.get("X-Api-Status-Code")
         
         if status_code != "20000000":
@@ -76,7 +80,7 @@ def transcribe_audio(file_path: str, app_id: str, access_token: str, resource_id
 
         while True:
             time.sleep(1)
-            query_resp = requests.post(query_url, headers=query_headers, json={}, timeout=10)
+            query_resp = session.post(query_url, headers=query_headers, json={}, timeout=10)
             q_status = query_resp.headers.get("X-Api-Status-Code")
             
             if q_status == "20000000":
