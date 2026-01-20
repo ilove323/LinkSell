@@ -25,6 +25,8 @@ if str(root) not in sys.path:
     sys.path.append(str(root))
 
 # 强制重载核心模块（确保代码更新即时生效）
+import src.services.asr_service
+importlib.reload(src.services.asr_service)
 import src.core.controller
 importlib.reload(src.core.controller)
 import src.core.conversational_engine
