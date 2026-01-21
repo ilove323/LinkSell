@@ -76,7 +76,7 @@ def main():
             if result.get("report_text"):
                 console.print("")
                 # 使用 Rich 的 Markdown 组件渲染漂亮的格式
-                console.print(Panel(Markdown(result["report_text"])), border_style="green", padding=(1, 2)))
+                console.print(Panel(Markdown(result["report_text"]), border_style="green", padding=(1, 2)))
                 console.print("")
 
             # (D) 错误处理

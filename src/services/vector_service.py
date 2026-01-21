@@ -79,15 +79,19 @@ class VectorService:
             # 无论成功失败，都设置 Event，通知主线程等待结束
             self._init_event.set()
 
-    def _ensure_initialized(self):
+    def _ensure_initialized(self, timeout: float = 30.0):
         """
         [状态守卫] 确保服务已就绪
         如果主线程在后台加载完成前调用了方法，这里会阻塞等待。
+
+        参数:
+        - timeout: 最大等待时间(秒)，防止无限阻塞
         """
         if not self._init_event.is_set():
-            print("⚠️ [VectorService] 请求过早，正在等待引擎就绪...")
-            self._init_event.wait() # <--- 阻塞点
-        
+            print(f"⚠️ [VectorService] 请求过早，正在等待最多 {timeout}s 引擎就绪...")
+            if not self._init_event.wait(timeout=timeout):
+                raise TimeoutError(f"VectorService 初始化超时 ({timeout}s)")
+
         if self._init_error:
             raise RuntimeError(f"VectorService failed to initialize: {self._init_error}")
 
@@ -113,11 +117,14 @@ class VectorService:
         text += f"关键点: {', '.join(record.get('key_points', []))}"
         return text
 
-    def add_record(self, record_id: int, record_data: dict):
+    def add_record(self, record_id: int, record_data: dict, timeout: float = 30.0):
         """
         [核心功能] 添加或更新一条记录
+
+        参数:
+        - timeout: 初始化超时时间(秒)
         """
-        self._ensure_initialized() # 确保就绪
+        self._ensure_initialized(timeout=timeout) # 确保就绪
         
         # 1. 生成内容向量
         content_text = self._format_record(record_data)
@@ -151,9 +158,14 @@ class VectorService:
             ids=[str(record_id)]
         )
 
-    def delete_record(self, record_id: str):
-        """[核心功能] 删除指定记录"""
-        self._ensure_initialized()
+    def delete_record(self, record_id: str, timeout: float = 30.0):
+        """
+        [核心功能] 删除指定记录
+
+        参数:
+        - timeout: 初始化超时时间(秒)
+        """
+        self._ensure_initialized(timeout=timeout)
         try:
             self.collection.delete(ids=[str(record_id)])
             return True
@@ -161,9 +173,14 @@ class VectorService:
             # 删除失败通常不影响主流程，记录即可
             return False
 
-    def reset_db(self):
-        """[危险操作] 清空所有数据"""
-        self._ensure_initialized()
+    def reset_db(self, timeout: float = 30.0):
+        """
+        [危险操作] 清空所有数据
+
+        参数:
+        - timeout: 初始化超时时间(秒)
+        """
+        self._ensure_initialized(timeout=timeout)
         try:
             self.client.delete_collection("sales_knowledge")
             self.collection = self.client.get_or_create_collection(name="sales_knowledge")
@@ -172,16 +189,17 @@ class VectorService:
             print(f"Reset failed: {e}")
             return False
 
-    def search(self, query: str, top_k=5, where_filter: dict = None):
+    def search(self, query: str, top_k=5, where_filter: dict = None, timeout: float = 30.0):
         """
         [核心功能] 语义搜索
-        
+
         参数:
         - query: 用户的问题或搜索词
         - top_k: 返回最相似的前 K 条
         - where_filter: 过滤条件 (例如 {"sales_rep": "张三"})
+        - timeout: 初始化超时时间(秒)
         """
-        self._ensure_initialized()
+        self._ensure_initialized(timeout=timeout)
         
         # 1. 将查询词转换为向量
         query_embedding = self.model.encode(query).tolist()
@@ -202,15 +220,16 @@ class VectorService:
                     history_snippets.append(json.loads(meta["json_data"]))
         return history_snippets
 
-    def search_projects(self, project_name: str, top_k=3, threshold=1.2):
+    def search_projects(self, project_name: str, top_k=3, threshold=1.2, timeout: float = 30.0):
         """
         [专用功能] 项目名相似度搜索
         用于检查项目是否已存在，或者根据模糊名称找项目。
-        
+
         参数:
         - threshold: 距离阈值 (L2距离)。越小越相似，超过此值则丢弃。
+        - timeout: 初始化超时时间(秒)
         """
-        self._ensure_initialized()
+        self._ensure_initialized(timeout=timeout)
         query_embedding = self.model.encode(project_name).tolist()
         
         results = self.collection.query(

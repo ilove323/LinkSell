@@ -43,9 +43,17 @@ st.set_page_config(page_title="LinkSell 智能销售助手", page_icon="💼", l
 # ==================== 状态管理 (Session State) ====================
 # Streamlit 每次刷新都会重置变量，必须把持久化数据存在 session_state 里
 
+@st.cache_resource
+def get_conversational_engine():
+    """
+    [性能优化] 缓存单例 ConversationalEngine，防止重新初始化 VectorService
+    使用 @st.cache_resource 确保 400MB 的向量模型不会在每次 Streamlit 重新运行时重新加载
+    """
+    return ConversationalEngine()
+
 # 1. 初始化对话引擎 (单例模式)
 if "engine" not in st.session_state:
-    st.session_state.engine = ConversationalEngine()
+    st.session_state.engine = get_conversational_engine()
 
 # 2. 初始化聊天记录列表
 if "messages" not in st.session_state:
