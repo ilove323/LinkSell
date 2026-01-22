@@ -36,14 +36,14 @@ LinkSell 采用**八层提示词体系**精确控制 AI 在各个业务环节的
 
 | 优先级 | Prompt 文件 | 调用入口 | 核心功能 |
 |--------|-----------|--------|---------|
-| 🔴 P1 | `classify_intent.txt` | `controller.identify_intent()` | 意图识别（RECORD/CREATE/GET/LIST/REPLACE/MERGE/DELETE/OTHER） |
-| 🟠 P2 | `sales_architect.txt` | `llm_service.architect_analyze()` | 结构化提取 + 小记生成（**最核心**） |
-| 🟡 P3 | `polish_text.txt` | `controller.polish()` | 文本润色（口语→书面语） |
-| 🟡 P4 | `extract_search_term.txt` | `controller.extract_search_term()` | 关键词提取（模糊指令→精准搜索词） |
-| 🟢 P5 | `query_sales.txt` | `llm_service.query_sales_data()` | RAG 问答（基于搜索结果回答） |
-| 🟢 P6 | `summarize_note.txt` | `llm_service.summarize_text()` | 长文本摘要（>500 字时） |
-| 🔵 P7 | `judge_save.txt` | `llm_service.judge_affirmative()` | 确认判断（是/否回答） |
-| ⚪ P8 | `delete_confirmation.txt` | 预留调用 | 删除确认（当前未激活） |
+|  P1 | `classify_intent.txt` | `controller.identify_intent()` | 意图识别（RECORD/CREATE/GET/LIST/REPLACE/MERGE/DELETE/OTHER） |
+|  P2 | `sales_architect.txt` | `llm_service.architect_analyze()` | 结构化提取 + 小记生成（**最核心**） |
+|  P3 | `polish_text.txt` | `controller.polish()` | 文本润色（口语→书面语） |
+|  P4 | `extract_search_term.txt` | `controller.extract_search_term()` | 关键词提取（模糊指令→精准搜索词） |
+|  P5 | `query_sales.txt` | `llm_service.query_sales_data()` | RAG 问答（基于搜索结果回答） |
+|  P6 | `summarize_note.txt` | `llm_service.summarize_text()` | 长文本摘要（>500 字时） |
+|  P7 | `judge_save.txt` | `llm_service.judge_affirmative()` | 确认判断（是/否回答） |
+|  P8 | `delete_confirmation.txt` | 预留调用 | 删除确认（当前未激活） |
 
 ### 2.1 完整的 LLM 调用链 (Call Chain)
 
@@ -120,7 +120,7 @@ def polish(self, text):
 缓存:   ["今天与王总沟通了轴承项目..."]
 ```
 
-### 2.3 结构化提取流程 (Extraction Pipeline) ⭐ 核心
+### 2.3 结构化提取流程 (Extraction Pipeline) - 核心
 
 #### Step 3: 结构化分析（CREATE/MERGE 阶段）
 ```python
