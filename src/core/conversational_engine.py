@@ -1,7 +1,7 @@
 """LinkSell 对话引擎 (Conversational Engine) - 无状态纯响应版 (v3.2)
 
 职责：
-- 处理所有意图的业务逻辑 (GET/LIST/REPLACE/CREATE/DELETE/RECORD/SAVE/MERGE)
+- 处理所有意图的业务逻辑 (GET/LIST/REPLACE/CREATE/DELETE/RECORD/MERGE)
 - 返回结构化的结果给 UI 层 (CLI/GUI)
 - 管理会话上下文 (Context ID)
 
@@ -207,7 +207,7 @@ class ConversationalEngine:
             return self.handle_delete(content)
         elif intent == "RECORD":
             return self.handle_record(content)
-        elif intent in ["SAVE", "MERGE"]:
+        elif intent == "MERGE":
             return self.handle_save()
         else:
             return {
@@ -382,7 +382,7 @@ class ConversationalEngine:
         }
 
     def handle_save(self) -> dict:
-        """[SAVE] 处理保存意图 (将缓存笔记存入上下文商机)"""
+        """[MERGE] 处理合并意图 (将缓存笔记存入上下文商机)"""
         if not self.current_opp_id:
             return {"type": "error", "message": "❌ 未选定商机。请先搜索并查看一个商机，再说'保存'。"}
         if not self.controller.note_buffer:

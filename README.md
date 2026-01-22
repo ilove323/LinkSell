@@ -109,5 +109,180 @@ LinkSell/
 
 ---
 
+## 🧠 AI 提示词体系 (Prompt Templates)
+
+LinkSell 采用**八层结构化提示词体系**，精确控制 AI 在各个业务环节的行为。所有提示词存储在 `config/prompts/` 目录下：
+
+### 📋 完整的 Prompt 使用清单
+
+| # | 文件名 | 调用时机 | 调用函数 | 核心功能 |
+|---|--------|--------|---------|---------|
+| 1️⃣ | **classify_intent.txt** | 用户输入时 | `controller.identify_intent()` | 意图识别：RECORD/CREATE/LIST/GET/REPLACE/MERGE/DELETE/OTHER |
+| 2️⃣ | **polish_text.txt** | RECORD 阶段 | `controller.polish()` | 文本润色：口语→书面语（去除"那个"、"嗯"等） |
+| 3️⃣ | **sales_architect.txt** | CREATE/MERGE 阶段 | `llm_service.architect_analyze()` | 结构化解析：生成 JSON + 提炼小记（`current_log_entry`） |
+| 4️⃣ | **extract_search_term.txt** | GET/LIST/REPLACE 阶段 | `controller.extract_search_term()` | 关键词提取：从模糊指令中精准抽取搜索词 |
+| 5️⃣ | **query_sales.txt** | RAG 查询时 | `llm_service.query_sales_data()` | 知识库问答：基于向量搜索的结果进行专业分析 |
+| 6️⃣ | **summarize_note.txt** | 长笔记备选方案 | `llm_service.summarize_text()` | 摘要提炼：将 >500 字长文本精炼为小记 |
+| 7️⃣ | **judge_save.txt** | 确认操作时 | `llm_service.judge_affirmative()` | 意图判断：判断用户的"是/否"回答 |
+| 8️⃣ | **delete_confirmation.txt** | DELETE 前 | 业务逻辑预留 | 删除确认：生成二次确认提示（当前未激活） |
+
+### 🔄 完整的数据流向
+
+```
+用户输入 (文本/语音)
+    ↓
+① classify_intent.txt → 意图识别 (RECORD/CREATE/LIST/...)
+    ↓
+    ├─ RECORD 路径：
+    │   ├─ ② polish_text.txt → 文本润色
+    │   └─ 笔记缓存（暂存不保存）
+    │
+    ├─ CREATE/MERGE 路径：
+    │   ├─ ③ sales_architect.txt → 结构化提取 + 小记生成
+    │   ├─ ⑥ summarize_note.txt → 可选（笔记过长时）
+    │   └─ JSON 保存到 data/opportunities/{项目名}.json
+    │
+    ├─ GET/LIST/REPLACE 路径：
+    │   ├─ ④ extract_search_term.txt → 关键词提取
+    │   └─ 调用向量库 + 模糊匹配
+    │
+    ├─ RAG 查询路径：
+    │   ├─ ④ extract_search_term.txt → 关键词提取
+    │   └─ ⑤ query_sales.txt → 基于搜索结果的问答
+    │
+    └─ DELETE 路径：
+        ├─ ⑦ judge_save.txt → 确认删除
+        └─ ⑧ delete_confirmation.txt → 生成确认提示
+
+```
+
+### 📍 各个阶段的 Prompt 调用
+
+#### **阶段 1：意图识别** (`classify_intent.txt`)
+```
+使用场景：每次用户输入时立即调用
+输入：用户原始输入文本
+输出：{"intent": "RECORD/CREATE/...", "content": "处理后的内容"}
+关键意图定义：
+  - RECORD: 提供笔记（不保存）
+  - CREATE: 明确要求保存/新建
+  - GET: 查看单个商机详情
+  - REPLACE: 修改商机信息
+  - MERGE: "保存" - 追加笔记到商机
+  - LIST: 列出多个商机
+  - DELETE: 删除商机
+  - OTHER: 闲聊
+```
+
+#### **阶段 2：文本润色** (`polish_text.txt`)
+```
+使用场景：当意图为 RECORD 时
+调用链：handle_record() → controller.add_to_note_buffer() → controller.polish()
+功能：口语转书面语（去除"那个"、"嗯"、"啊"）
+输出：润色后的文本（直接存入 note_buffer）
+示例：
+  输入：  "那个，今天嗯，跟王总聊了一下那个轴承的事儿..."
+  输出：  "今天与王总沟通了轴承项目的相关事宜。"
+```
+
+#### **阶段 3：结构化解析** (`sales_architect.txt`) ⭐ 核心
+```
+使用场景：CREATE/MERGE 时（笔记最终保存前）
+调用链：handle_save() → controller.merge() → llm_service.architect_analyze()
+功能：
+  1. 解析笔记内容，提取商机结构化字段
+  2. 生成 current_log_entry（50-100字小记）← 最终保存的小记！
+  3. 识别商机阶段（1-4 数字）
+  4. 提取客户信息、预算、竞争对手等
+输出：完整的结构化 JSON
+关键字段：
+  - current_log_entry: "本次沟通精华摘要（这个会被保存到 record_logs）"
+  - opportunity_stage: 1-4 数字
+  - project_opportunity: {...} (内层结构)
+```
+
+#### **阶段 4：关键词提取** (`extract_search_term.txt`)
+```
+使用场景：GET/LIST/REPLACE 时需要定位商机
+调用链：controller.resolve_target_interactive() → controller.extract_search_term()
+功能：从模糊指令中精准抽取搜索关键词
+规则：
+  - 具体名称 → 提取（如"沈阳轴承厂"）
+  - 泛指（"看看有什么"） → 返回 "ALL"
+  - 听不懂 → 返回 "Unknown"
+示例：
+  "有哪些商机？" → ALL
+  "看看沈阳轴承项目" → 沈阳轴承
+  "最近那个50万的单子" → 50万
+```
+
+#### **阶段 5：RAG 问答** (`query_sales.txt`)
+```
+使用场景：用户提出与历史商机相关的问题
+调用链：controller.query_knowledge_base() → llm_service.query_sales_data()
+功能：基于向量搜索的历史数据进行专业问答
+输入：
+  - context: 向量搜索相关的商机历史记录
+  - query: 用户的问题
+输出：基于现有数据的专业分析回答
+示例：
+  用户问："最近的轴承订单进度如何？"
+  系统：搜索 → query_sales.txt → 结合历史数据生成回答
+```
+
+#### **阶段 6：长文本摘要** (`summarize_note.txt`)
+```
+使用场景：笔记 >500 字且未生成 current_log_entry 时
+调用链：controller.save() → llm_service.summarize_text()
+功能：将冗长的会议记录精炼为 ≤500 字小记
+触发条件：final_log_content 为 None 且原文 >500 字
+示例：
+  输入：完整的 3000 字会议记录
+  输出：精炼的 300 字小记
+```
+
+#### **阶段 7：确认判断** (`judge_save.txt`)
+```
+使用场景：系统向用户提出是非题时
+调用链：（交互式操作中）→ llm_service.judge_affirmative()
+功能：判断用户的 "是/否" 回答是否表示同意
+规则：
+  肯定：好、可以、没问题、嗯、妥、是、OK → TRUE
+  否定：不、否、别、取消、No、算了 → FALSE
+输出：TRUE 或 FALSE
+```
+
+#### **阶段 8：删除确认** (`delete_confirmation.txt`)
+```
+使用场景：DELETE 操作前（当前预留）
+功能：生成友好但严肃的删除确认提示
+输入：要删除的商机 JSON
+输出：中文的确认提示语
+状态：功能完成但未在 CLI/GUI 中激活，可在后续需要时启用
+```
+
+### 🔗 调用关系速查表
+
+```
+classify_intent.txt
+  ├─→ RECORD → polish_text.txt
+  ├─→ CREATE/MERGE → sales_architect.txt
+  │                  └─→ (可选) summarize_note.txt
+  ├─→ GET/LIST/REPLACE → extract_search_term.txt
+  │                        └─→ (RAG) query_sales.txt
+  ├─→ MERGE → sales_architect.txt
+  ├─→ DELETE → (预留) delete_confirmation.txt
+  └─→ OTHER → （无额外 Prompt）
+```
+
+### 💡 Prompt 优化建议
+
+1. **sales_architect.txt** 是系统的核心，决定了数据结构化的质量。后续可针对特定行业（房产、IT 等）定制专项版本。
+2. **polish_text.txt** 可扩展支持多语言（英文、日文）。
+3. **extract_search_term.txt** 的规则库可动态加载，支持自定义关键词映射。
+4. **query_sales.txt** 可增加 Few-Shot 学习，基于历史问答对进行精准调优。
+
+---
+
 ## 🤝 参与开发
 我们欢迎任何形式的贡献！请在提交 PR 前确保您已阅读并理解 `AI_README.md`。

@@ -17,6 +17,7 @@ import sys
 import time
 import json
 import importlib
+import hashlib
 from pathlib import Path
 
 # [环境配置] 将项目根目录加入 Python 搜索路径
@@ -193,14 +194,23 @@ col_mic, col_upload, _ = st.columns([1, 1.2, 10])
 with col_mic:
     # 录音按钮 (Audio Input)
     voice_audio = st.audio_input("🎙️", label_visibility="collapsed", key="mic_btn")
-    if voice_audio: handle_voice_input(voice_audio)
+    if voice_audio:
+        # [防抖动] 避免每次刷新重复处理同一条音频
+        # 使用音频数据的哈希作为唯一标识
+        audio_hash = hashlib.md5(voice_audio.getbuffer()).hexdigest()
+        audio_key = f"processed_audio_{audio_hash}"
+        if audio_key not in st.session_state:
+            handle_voice_input(voice_audio)
+            st.session_state[audio_key] = True  # 标记为已处理
 
 with col_upload:
     # 文件上传按钮
     uploaded_file = st.file_uploader("📁", type=["wav", "mp3"], label_visibility="collapsed")
     if uploaded_file:
         # [防抖动] 避免每次刷新重复处理同一个文件
-        file_key = f"processed_{uploaded_file.name}_{uploaded_file.size}"
+        # 使用文件名+大小+内容哈希作为唯一标识（更加可靠）
+        file_hash = hashlib.md5(uploaded_file.getbuffer()).hexdigest()
+        file_key = f"processed_{uploaded_file.name}_{uploaded_file.size}_{file_hash}"
         if file_key not in st.session_state:
             handle_voice_input(uploaded_file)
-            st.session_state[file_key] = True # 标记为已处理
+            st.session_state[file_key] = True  # 标记为已处理

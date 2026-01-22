@@ -187,7 +187,7 @@ class LinkSellController:
             intent = "RECORD" # 默认归为笔记暂存
             content = text
             if any(k in text for k in ["保存"]):
-                intent = "SAVE"
+                intent = "MERGE"
             elif any(k in text for k in ["正式保存", "正式录入", "提交到", "创建项目", "新建项目", "存入商机"]):
                 intent = "CREATE"
             elif any(k in text for k in ["查", "找", "看", "哪些", "搜索", "列表"]):
@@ -198,7 +198,7 @@ class LinkSellController:
                 intent = "REPLACE"
         
         # 3. 意图白名单校验
-        valid_intents = ["CREATE", "LIST", "GET", "REPLACE", "DELETE", "RECORD", "SAVE", "MERGE", "OTHER"]
+        valid_intents = ["CREATE", "LIST", "GET", "REPLACE", "DELETE", "RECORD", "MERGE", "OTHER"]
         if intent not in valid_intents:
             intent = "RECORD"
         
