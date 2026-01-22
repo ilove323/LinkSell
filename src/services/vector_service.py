@@ -257,6 +257,7 @@ class VectorService:
                     matches.append({
                         "id": rid,
                         "project_name": p_name,
+                        "sales_rep": data.get("sales_rep", "未知"),
                         "distance": dist
                     })
                 except: pass

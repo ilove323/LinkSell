@@ -254,7 +254,7 @@ def query_sales_data(query: str, history_data: list, api_key: str, endpoint_id: 
     except Exception as e:
         return f"查询出错啦：{e}"
 
-def architect_analyze(raw_notes: list, api_key: str, endpoint_id: str, original_data: dict = None, recorder: str = "未知", current_time: str = None) -> dict:
+def architect_analyze(raw_notes: list, api_key: str, endpoint_id: str, original_data: dict = None, sales_rep: str = "未知", current_time: str = None) -> dict:
     """
     [核心逻辑] 销售架构师 (Sales Architect)
     LinkSell 的核心智能引擎。负责接收原始笔记，根据当前上下文 (original_data)，
@@ -272,7 +272,7 @@ def architect_analyze(raw_notes: list, api_key: str, endpoint_id: str, original_
         "original_json": original_data, # 如果是新建，这里为 None
         "raw_notes": raw_notes,         # 用户的多条笔记片段
         "current_time": current_time,
-        "recorder": recorder
+        "sales_rep": sales_rep
     }
 
     try:

@@ -54,7 +54,7 @@ def _format_report_cached(data_json: str, stage_map_json: str) -> str:
     lines.append(f"### {p_name} ({stage_name})")
     lines.append(f"- **ID**: `{data.get('id')}`")
     lines.append(f"- **属性**: {is_new}")
-    lines.append(f"- **负责销售**: {data.get('recorder', '未指定')}")
+    lines.append(f"- **负责销售**: {data.get('sales_rep', '未指定')}")
     lines.append("")
 
     # [区块 2] 客户信息 (多行展示)

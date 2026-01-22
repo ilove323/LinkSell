@@ -52,7 +52,7 @@ class LinkSellController:
             os.environ["HF_ENDPOINT"] = hf_endpoint
         
         # 加载默认销售员 (记录者)
-        self.default_recorder = self.config.get("global", "default_recorder", fallback="陈一骏")
+        self.default_sales_rep = self.config.get("global", "default_recorder", fallback="陈一骏")
         
         # [V3.0 新增] 笔记暂存区：用于在生成商机前临时存储用户的多条语音/文本
         self.note_buffer = [] 
@@ -77,6 +77,41 @@ class LinkSellController:
         # 6. 初始化本地数据目录
         self.data_dir = Path("data/opportunities")
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        # ===== [PHASE 3 数据迁移] 强制合并 sales_rep =====
+        # 遍历所有文件，将 recorder 字段迁移至 sales_rep 并删除 recorder
+        # 确保系统彻底摆脱旧字段的干扰
+        migrated_count = 0
+        json_files = list(self.data_dir.glob("*.json"))
+        for fp in json_files:
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                
+                changed = False
+                # 迁移逻辑：如果存在 recorder
+                if "recorder" in d:
+                    rec_val = d["recorder"]
+                    # 如果 sales_rep 为空或不存在，则迁移过去
+                    if not d.get("sales_rep"):
+                        d["sales_rep"] = rec_val
+                    # 无论如何，删除 recorder
+                    del d["recorder"]
+                    changed = True
+                
+                # 再次确认 sales_rep 存在，防止丢失
+                if not d.get("sales_rep"):
+                    d["sales_rep"] = self.default_recorder # 使用默认值补全
+
+                if changed:
+                    with open(fp, "w", encoding="utf-8") as f:
+                        json.dump(d, f, ensure_ascii=False, indent=2)
+                    migrated_count += 1
+            except Exception as e:
+                print(f"[Migration Warning] Failed to migrate {fp.name}: {e}")
+        
+        if migrated_count > 0:
+            print(f"🧹 [System] 已完成旧数据清洗，迁移了 {migrated_count} 个文件的销售字段。")
 
         # 7. 初始化本地向量库 (Vector DB)
         try:
@@ -381,7 +416,7 @@ class LinkSellController:
 
                 # 只有当关键字没搜到时才补充 (避免重复)
                 if p_name not in candidates:
-                    candidates[p_name] = {"name": p_name, "source": "语义相似", "sales_rep": "未知", "id": vm.get("id")}
+                    candidates[p_name] = {"name": p_name, "source": "语义相似", "sales_rep": vm.get("sales_rep", "未知"), "id": vm.get("id")}
 
         # --- 智能排序与筛选 ---
         contained_match = None
@@ -480,7 +515,7 @@ class LinkSellController:
             self.api_key,
             self.endpoint_id,
             original_data=data,
-            recorder=self.default_recorder
+            sales_rep=self.default_sales_rep
         )
         
         # 解析失败处理：只追加日志
@@ -488,7 +523,7 @@ class LinkSellController:
             if "record_logs" not in data: data["record_logs"] = []
             new_log_entry = {
                 "time": now.strftime("%Y-%m-%d %H:%M:%S"),
-                "recorder": self.default_recorder,
+                "sales_rep": self.default_sales_rep,
                 "content": note_content
             }
             data["record_logs"].append(new_log_entry)
@@ -561,7 +596,7 @@ class LinkSellController:
         if "record_logs" not in merged: merged["record_logs"] = []
         new_log_entry = {
             "time": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "recorder": self.default_recorder,
+            "sales_rep": self.default_sales_rep,
             "content": note_content
         }
         merged["record_logs"].append(new_log_entry)
@@ -580,7 +615,7 @@ class LinkSellController:
             self.api_key, 
             self.endpoint_id, 
             original_data=data, 
-            recorder=self.default_recorder
+            sales_rep=self.default_sales_rep
         )
         
         if not updated_data:
@@ -599,20 +634,14 @@ class LinkSellController:
             updated_data["project_opportunity"]["project_name"] = outer_name
             
         # 3. 保留系统元数据 (ID, Logs等)
-        meta_keys = ["id", "_file_path", "_temp_id", "created_at", "record_logs", "updated_at", "recorder"]
+        meta_keys = ["id", "_file_path", "_temp_id", "created_at", "record_logs", "updated_at", "sales_rep"]
         for k in meta_keys:
             if k in data and k not in updated_data:
                 updated_data[k] = data[k]
         
-        # 4. 同步 Sales Rep
-        if "sales_rep" not in updated_data:
-            if "recorder" in updated_data:
-                updated_data["sales_rep"] = updated_data["recorder"]
-            elif "recorder" in data:
-                updated_data["sales_rep"] = data["recorder"]
-        
-        if "sales_rep" in updated_data and "recorder" not in updated_data:
-            updated_data["recorder"] = updated_data["sales_rep"]
+        # 4. 确保 sales_rep 存在
+        if "sales_rep" not in updated_data and "sales_rep" in data:
+            updated_data["sales_rep"] = data["sales_rep"]
         
         # 5. 处理文件重命名 (如果改了项目名)
         old_proj_name = data.get("project_opportunity", {}).get("project_name")
@@ -669,7 +698,7 @@ class LinkSellController:
         # 2. 准备日志条目
         new_log_entry = {
             "time": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "recorder": self.default_recorder,
+            "sales_rep": self.default_sales_rep,
             "content": final_log_content
         }
 
@@ -922,12 +951,8 @@ class LinkSellController:
         save_data = new_data.copy()
         save_data.pop("_temp_id", None)
         save_data.pop("_file_path", None)
-        
-        # 兼容性同步
-        if "sales_rep" in save_data and "recorder" not in save_data:
-            save_data["recorder"] = save_data["sales_rep"]
-        elif "recorder" in save_data and "sales_rep" not in save_data:
-            save_data["sales_rep"] = save_data["recorder"]
+        # 确保 recorder 被清理
+        save_data.pop("recorder", None)
         
         save_data["updated_at"] = datetime.datetime.now().isoformat()
         
@@ -1065,7 +1090,7 @@ class LinkSellController:
             self.api_key, 
             self.endpoint_id, 
             original_data=None,
-            recorder=self.default_recorder
+            sales_rep=self.default_sales_rep
         )
 
         if not result_json:
@@ -1092,7 +1117,7 @@ class LinkSellController:
         if log_content:
             result_json["record_logs"] = [{
                 "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "recorder": self.default_recorder,
+                "sales_rep": self.default_sales_rep,
                 "content": log_content
             }]
             result_json.pop("current_log_entry", None)
